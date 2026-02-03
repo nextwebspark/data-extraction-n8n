@@ -1,0 +1,1020 @@
+{
+  "name": "alok_extract_info_1.0.1",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "/**\n * PRODUCTION MARKDOWN POST-PROCESSOR v3.0\n * Optimized for LLM Extraction Quality\n * \n * DESIGN PRINCIPLES:\n * 1. Semantic Structure Preserved - maintain document meaning and hierarchy\n * 2. Minimal Layout Noise - remove artifacts, duplicates, page furniture\n * 3. Stable Section Boundaries - consistent, deterministic sectioning\n * 4. Deterministic Output - same input always produces same output\n * 5. Source Agnostic - handles Landing.ai, Docling, Marker, and unstructured markdown\n * \n * QUALITY STANDARDS:\n * - Clean heading hierarchy (H1-H6)\n * - Preserved semantic content (tables, lists, emphasis)\n * - Removed OCR artifacts and noise\n * - Normalized whitespace and formatting\n * - Consistent section structure for LLM consumption\n * - Metadata preservation where valuable\n * - Table structure maintained with clear delimiters\n * \n * LANDING.AI SPECIFIC OPTIMIZATIONS:\n * - Handles anchor tag patterns: <a id='uuid'></a>\n * - Processes image captions: <::description::>\n * - Normalizes double-space to newline conversions\n * - Removes PDF page markers and document footers\n */\n\n// ============================================================================\n// UTILITY FUNCTIONS\n// ============================================================================\n\nfunction txt(value) {\n  return value == null ? '' : String(value);\n}\n\nfunction RX(pattern, flags) {\n  return new RegExp(pattern, flags || 'g');\n}\n\n// ============================================================================\n// PHASE 1: NORMALIZATION & CLEANING\n// ============================================================================\n\n/**\n * Initial text normalization - handles encoding, line breaks, basic cleanup\n */\nfunction normalizeEncoding(text) {\n  let t = txt(text);\n  \n  // Normalize line endings (Windows, Mac, Unix)\n  t = t.replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');\n  \n  // Remove BOM if present\n  t = t.replace(/^\\uFEFF/, '');\n  \n  // Normalize unicode whitespace\n  t = t.replace(/\\u00A0/g, ' '); // non-breaking space\n  t = t.replace(/\\u2007/g, ' '); // figure space\n  t = t.replace(/\\u202F/g, ' '); // narrow no-break space\n  t = t.replace(/[\\u2000-\\u200B]/g, ' '); // various spaces\n  \n  // Normalize quotes and dashes\n  t = t.replace(/[\\u2018\\u2019]/g, \"'\"); // smart single quotes\n  t = t.replace(/[\\u201C\\u201D]/g, '\"'); // smart double quotes\n  t = t.replace(/[\\u2013\\u2014]/g, '-'); // en/em dashes\n  t = t.replace(/\\u2026/g, '...'); // ellipsis\n  \n  return t;\n}\n\n/**\n * Remove Landing.ai specific artifacts\n */\nfunction removeLandingAiArtifacts(text) {\n  let t = text;\n  \n  // Remove anchor tags (Landing.ai UUID markers)\n  // Pattern: <a id='93bd37e5-09ed-484c-96b6-c8d42310a057'></a>\n  t = t.replace(/<a\\s+id=['\"][^'\"]*['\"]\\s*>\\s*<\\/a>/gi, '');\n  t = t.replace(/<a\\s+id=['\"][^'\"]*['\"]\\s*\\/>/gi, '');\n  \n  // Convert Landing.ai double-space pattern to newlines\n  // Landing.ai uses \"  \" (double space) as line break marker\n  t = t.replace(/  +/g, '\\n');\n  \n  // Clean image caption tags but preserve content\n  // Pattern 1: <:: description: type::> (Landing.ai format with type marker)\n  // Pattern 2: <:: description ::> (simple format)\n  t = t.replace(/<::\\s*(.+?)\\s*::>/gs, function(match, content) {\n    const cleaned = content.trim();\n    \n    // Skip very long captions (likely malformed)\n    if (cleaned.length > 800) return '';\n    \n    // Skip very short (noise)\n    if (cleaned.length < 10) return '';\n    \n    // Check if it has a type marker at the end (: figure, : photo, : chart, etc.)\n    // Note: The outer regex already consumed the :: so we match \"description: type\" not \"description: type::\"\n    const typeMatch = cleaned.match(/^(.+?):\\s*(figure|photo|chart|map|table|image|logo|transcription|icon)\\s*$/i);\n    \n    if (typeMatch) {\n      const description = typeMatch[1].trim();\n      const type = typeMatch[2].charAt(0).toUpperCase() + typeMatch[2].slice(1).toLowerCase();\n      \n      // Only include if description is substantial\n      if (description.length > 15) {\n        return '\\n\\n**' + type + ':** ' + description + '\\n\\n';\n      }\n      return '';\n    }\n    \n    // No type marker - treat as regular caption\n    if (cleaned.length > 15) {\n      return '\\n\\n**Figure:** ' + cleaned + '\\n\\n';\n    }\n    \n    return '';\n  });\n  \n  // Preserve pre-existing table tokens (from previous processing)\n  // Don't remove [[TABLE_N]] tokens if they're already there\n  \n  return t;\n  \n  return t;\n}\n\n/**\n * Remove common PDF/document artifacts\n */\nfunction removeDocumentArtifacts(text) {\n  let t = text;\n  \n  // Page markers\n  t = t.replace(/\\bPage\\s+\\d+\\s*of\\s*\\d+\\b/gi, '');\n  t = t.replace(/\\bPage\\s+\\d+\\b/gi, '');\n  t = t.replace(/^[-_=\\s]*Page\\s*\\d+[-_=\\s]*$/gmi, '');\n  \n  // Headers/footers (common patterns)\n  t = t.replace(/^[-_=\\s]*\\d+[-_=\\s]*$/gm, ''); // Just page numbers\n  t = t.replace(/^\\d+\\s*$/gm, ''); // Standalone numbers\n  \n  // Document metadata (common in exports)\n  t = t.replace(/BoD'?s?\\s*Report\\s*for\\s*Year\\s*\\d{4}/gi, '');\n  t = t.replace(/Annual\\s*Report\\s*\\d{4}\\s*$/gmi, '');\n  t = t.replace(/Copyright\\s*©\\s*\\d{4}/gi, '');\n  \n  // Logo markers\n  t = t.replace(/<::logo:[\\s\\S]*?::>/gi, '');\n  \n  // HTML comments\n  t = t.replace(/<!--[\\s\\S]*?-->/g, '');\n  \n  // Horizontal rules (often noise in parsed docs)\n  t = t.replace(/^[-_=*]{3,}\\s*$/gm, '');\n  \n  return t;\n}\n\n/**\n * Remove OCR artifacts and noise\n */\nfunction removeOCRArtifacts(text) {\n  let t = text;\n  \n  // OCR noise patterns\n  t = t.replace(/[|¦]{5,}/g, ''); // Long vertical bars\n  t = t.replace(/[\\.·]{5,}/g, ''); // Dot leaders (TOC artifacts)\n  t = t.replace(/_{5,}/g, ''); // Underline artifacts\n  \n  // Broken words with spaces (OCR error)\n  // Example: \"r e p o r t\" -> \"report\"\n  t = t.replace(/\\b([a-z])\\s([a-z])\\s([a-z])\\s([a-z])/gi, '$1$2$3$4');\n  \n  // Remove standalone special characters on their own lines\n  t = t.replace(/^\\s*[•▪▫►▸‣⦁○●◆◇■□⬜⬛★☆]\\s*$/gm, '');\n  \n  return t;\n}\n\n/**\n * Fix common formatting issues\n */\nfunction fixFormattingIssues(text) {\n  let t = text;\n  \n  // Fix spacing around punctuation\n  t = t.replace(/\\s+([.,;:!?)])/g, '$1'); // Remove space before punctuation\n  t = t.replace(/([.,;:!?])([A-Za-z])/g, '$1 $2'); // Add space after punctuation\n  t = t.replace(/\\(\\s+/g, '('); // Remove space after opening paren\n  t = t.replace(/\\s+\\)/g, ')'); // Remove space before closing paren\n  \n  // Fix common OCR character substitutions\n  t = t.replace(/(\\d),(\\d{3})/g, '$1,$2'); // Ensure comma in numbers\n  t = t.replace(/([A-Za-z])0([A-Za-z])/g, '$1O$2'); // 0 -> O in words\n  t = t.replace(/([A-Za-z])1([A-Za-z])/g, '$1I$2'); // 1 -> I in words\n  \n  return t;\n}\n\n/**\n * Normalize whitespace consistently\n */\nfunction normalizeWhitespace(text) {\n  let t = text;\n  \n  // Normalize horizontal whitespace on each line\n  t = t.replace(/[ \\t]+/g, ' ');\n  \n  // Remove leading/trailing whitespace from each line\n  t = t.replace(/^[ \\t]+|[ \\t]+$/gm, '');\n  \n  // Remove empty lines (more than 2 consecutive newlines)\n  t = t.replace(/\\n{4,}/g, '\\n\\n\\n');\n  \n  // Ensure single newline at end of document\n  t = t.trim() + '\\n';\n  \n  return t;\n}\n\n// ============================================================================\n// PHASE 2: HEADING NORMALIZATION\n// ============================================================================\n\n/**\n * Detect and normalize heading patterns to markdown format\n */\nfunction normalizeHeadings(text) {\n  let t = text;\n  const lines = t.split('\\n');\n  const normalized = [];\n  \n  for (let i = 0; i < lines.length; i++) {\n    let line = lines[i];\n    const trimmed = line.trim();\n    \n    // Skip empty lines\n    if (!trimmed) {\n      normalized.push(line);\n      continue;\n    }\n    \n    // Already markdown heading - preserve it\n    if (/^#{1,6}\\s+/.test(trimmed)) {\n      // Ensure proper spacing after # symbols\n      line = trimmed.replace(/^(#{1,6})\\s*/, '$1 ');\n      normalized.push(line);\n      continue;\n    }\n    \n    // Detect heading-like patterns and convert to markdown\n    let converted = false;\n    \n    // Pattern 1: **Standalone Bold** or __Standalone Underline__\n    if (/^(\\*\\*|__)([^*_]+)(\\*\\*|__)$/.test(trimmed)) {\n      const content = trimmed.replace(/^(\\*\\*|__)/, '').replace(/(\\*\\*|__)$/, '').trim();\n      if (isLikelyHeading(content, lines, i)) {\n        line = '## ' + content;\n        converted = true;\n      }\n    }\n    \n    // Pattern 2: ALL CAPS (likely heading)\n    if (!converted && /^[A-Z\\s&'-]{8,100}$/.test(trimmed) && !/\\d{4}/.test(trimmed)) {\n      if (isLikelyHeading(trimmed, lines, i)) {\n        line = '## ' + toTitleCase(trimmed);\n        converted = true;\n      }\n    }\n    \n    // Pattern 3: Title Case (capitalized words, no ending punctuation)\n    if (!converted && /^[A-Z]/.test(trimmed) && !/[.!?]$/.test(trimmed)) {\n      const words = trimmed.split(/\\s+/);\n      if (words.length >= 2 && words.length <= 15) {\n        const capitalizedRatio = words.filter(w => /^[A-Z]/.test(w)).length / words.length;\n        if (capitalizedRatio >= 0.6 && isLikelyHeading(trimmed, lines, i)) {\n          line = '## ' + trimmed;\n          converted = true;\n        }\n      }\n    }\n    \n    // Pattern 4: Numbered sections (1. Section Name, 1.1 Subsection, etc.)\n    if (!converted && /^(\\d+\\.)+\\s+[A-Z]/.test(trimmed)) {\n      const match = trimmed.match(/^((\\d+\\.)+)\\s+(.+)$/);\n      if (match) {\n        const level = (match[1].match(/\\d+/g) || []).length;\n        const headingLevel = Math.min(level + 1, 6);\n        const content = match[3];\n        line = '#'.repeat(headingLevel) + ' ' + match[1] + ' ' + content;\n        converted = true;\n      }\n    }\n    \n    normalized.push(line);\n  }\n  \n  return normalized.join('\\n');\n}\n\n/**\n * Check if a line is likely a heading based on context\n */\nfunction isLikelyHeading(text, allLines, currentIndex) {\n  // Too long to be a heading\n  if (text.length > 150) return false;\n  \n  // Too short (likely noise)\n  if (text.length < 3) return false;\n  \n  // Contains obvious prose indicators (conjunctions, articles in middle)\n  const proseIndicators = /\\b(is|are|was|were|have|has|had|will|would|can|could|should|may|might)\\s+\\w+/i;\n  if (proseIndicators.test(text)) return false;\n  \n  // Check next line - headings typically followed by content or blank line\n  if (currentIndex < allLines.length - 1) {\n    const nextLine = allLines[currentIndex + 1].trim();\n    if (nextLine.length > 0 && /^[a-z]/i.test(nextLine)) {\n      return true; // Followed by text content\n    }\n  }\n  \n  return true;\n}\n\n/**\n * Convert ALL CAPS to Title Case\n */\nfunction toTitleCase(text) {\n  const minorWords = new Set(['a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'in', 'of', 'on', 'or', 'the', 'to', 'with']);\n  \n  return text.toLowerCase().split(/\\s+/).map(function(word, index) {\n    // Always capitalize first word\n    if (index === 0) return word.charAt(0).toUpperCase() + word.slice(1);\n    // Skip minor words unless they're the first word\n    if (minorWords.has(word)) return word;\n    // Capitalize everything else\n    return word.charAt(0).toUpperCase() + word.slice(1);\n  }).join(' ');\n}\n\n/**\n * Build heading hierarchy and assign consistent levels\n */\nfunction normalizeHeadingLevels(text) {\n  const lines = text.split('\\n');\n  const headings = [];\n  \n  // Collect all headings with their original levels\n  lines.forEach(function(line, index) {\n    const match = line.match(/^(#{1,6})\\s+(.+)$/);\n    if (match) {\n      headings.push({\n        index: index,\n        level: match[1].length,\n        text: match[2].trim(),\n        original: line\n      });\n    }\n  });\n  \n  if (headings.length === 0) return text;\n  \n  // Determine if we need to normalize levels\n  // Strategy: ensure proper hierarchy (no jumps, e.g., H1 -> H3)\n  let normalized = [...lines];\n  \n  for (let i = 0; i < headings.length; i++) {\n    const current = headings[i];\n    const prev = i > 0 ? headings[i - 1] : null;\n    \n    let newLevel = current.level;\n    \n    if (prev) {\n      // Don't allow jumping more than 1 level down\n      if (current.level > prev.level + 1) {\n        newLevel = prev.level + 1;\n      }\n    } else {\n      // First heading should be H1 or H2\n      if (current.level > 2) {\n        newLevel = 1;\n      }\n    }\n    \n    if (newLevel !== current.level) {\n      normalized[current.index] = '#'.repeat(newLevel) + ' ' + current.text;\n    }\n  }\n  \n  return normalized.join('\\n');\n}\n\n// ============================================================================\n// PHASE 3: TABLE EXTRACTION & NORMALIZATION\n// ============================================================================\n\n/**\n * Extract and normalize tables from HTML or markdown\n */\nfunction extractAndNormalizeTables(text) {\n  let counter = 0;\n  const tables = [];\n  let processedText = text;\n  \n  // First, check for pre-existing table tokens from previous processing\n  // Pattern: [[TABLE_1]], [[TABLE_2]], etc.\n  const existingTokens = text.match(/\\[\\[TABLE_\\d+\\]\\]/g) || [];\n  \n  if (existingTokens.length > 0) {\n    // Tables are already tokenized - preserve them\n    // Create placeholder table entries\n    existingTokens.forEach(function(token) {\n      const idMatch = token.match(/TABLE_(\\d+)/);\n      if (idMatch) {\n        const id = parseInt(idMatch[1]);\n        tables.push({\n          id: id,\n          token: token,\n          headers: [],\n          rows: [],\n          hasHeaders: false,\n          note: 'Pre-existing token from upstream processing'\n        });\n      }\n    });\n    return {\n      text: processedText,\n      tables: tables\n    };\n  }\n  \n  // Extract HTML tables\n  processedText = processedText.replace(/<table[^>]*>[\\s\\S]*?<\\/table>/gi, function(html) {\n    counter++;\n    const table = parseHTMLTable(html);\n    if (table.rows.length > 0) {\n      tables.push({\n        id: counter,\n        token: '[[TABLE_' + counter + ']]',\n        ...table\n      });\n      return '\\n\\n[[TABLE_' + counter + ']]\\n\\n';\n    }\n    return '';\n  });\n  \n  // Detect and normalize markdown tables\n  processedText = normalizeMarkdownTables(processedText, tables, counter);\n  \n  return {\n    text: processedText,\n    tables: tables\n  };\n}\n\n/**\n * Parse HTML table into structured data\n */\nfunction parseHTMLTable(html) {\n  const rows = [];\n  const rowMatches = html.match(/<tr[^>]*>[\\s\\S]*?<\\/tr>/gi) || [];\n  \n  for (let i = 0; i < rowMatches.length; i++) {\n    const rowHtml = rowMatches[i];\n    const cells = (rowHtml.match(/<t[dh][^>]*>[\\s\\S]*?<\\/t[dh]>/gi) || [])\n      .map(function(cell) {\n        return cell\n          .replace(/<[^>]+>/g, '') // Strip tags\n          .replace(/&nbsp;/g, ' ')\n          .replace(/&[a-z]+;/gi, '')\n          .replace(/\\s+/g, ' ')\n          .trim();\n      })\n      .filter(function(c) { return c.length > 0; });\n    \n    if (cells.length > 0) {\n      rows.push(cells);\n    }\n  }\n  \n  const hasHeaderRow = rowMatches[0] && rowMatches[0].includes('<th');\n  const headers = hasHeaderRow && rows.length > 0 ? rows[0] : [];\n  const dataRows = hasHeaderRow ? rows.slice(1) : rows;\n  \n  return {\n    headers: headers,\n    rows: dataRows,\n    hasHeaders: hasHeaderRow\n  };\n}\n\n/**\n * Detect and normalize markdown tables\n */\nfunction normalizeMarkdownTables(text, existingTables, startCounter) {\n  const lines = text.split('\\n');\n  const result = [];\n  let i = 0;\n  let counter = startCounter;\n  \n  while (i < lines.length) {\n    const line = lines[i];\n    \n    // Detect potential markdown table (line with | characters)\n    if (line.includes('|') && line.trim().split('|').length >= 3) {\n      const tableLines = [line];\n      let j = i + 1;\n      \n      // Collect consecutive table lines\n      while (j < lines.length && lines[j].includes('|')) {\n        tableLines.push(lines[j]);\n        j++;\n      }\n      \n      // Validate it's a proper table (needs at least 2 rows)\n      if (tableLines.length >= 2) {\n        counter++;\n        const table = parseMarkdownTable(tableLines);\n        \n        if (table.rows.length > 0) {\n          existingTables.push({\n            id: counter,\n            token: '[[TABLE_' + counter + ']]',\n            ...table\n          });\n          result.push('[[TABLE_' + counter + ']]');\n          i = j;\n          continue;\n        }\n      }\n    }\n    \n    result.push(line);\n    i++;\n  }\n  \n  return result.join('\\n');\n}\n\n/**\n * Parse markdown table format\n */\nfunction parseMarkdownTable(lines) {\n  const rows = [];\n  let headers = [];\n  let headerRowIndex = -1;\n  \n  for (let i = 0; i < lines.length; i++) {\n    const line = lines[i].trim();\n    \n    // Check if separator row (------|------|------)\n    if (/^\\|?\\s*[-:]+\\s*(\\|\\s*[-:]+\\s*)+\\|?\\s*$/.test(line)) {\n      headerRowIndex = i - 1;\n      continue;\n    }\n    \n    // Parse data row\n    const cells = line\n      .split('|')\n      .map(function(cell) { return cell.trim(); })\n      .filter(function(cell) { return cell.length > 0; });\n    \n    if (cells.length > 0) {\n      if (i === headerRowIndex) {\n        headers = cells;\n      } else {\n        rows.push(cells);\n      }\n    }\n  }\n  \n  return {\n    headers: headers,\n    rows: rows,\n    hasHeaders: headers.length > 0\n  };\n}\n\n// ============================================================================\n// PHASE 4: SECTION DETECTION & EXTRACTION\n// ============================================================================\n\n/**\n * Intelligent section detection using multiple strategies\n */\nfunction detectSections(text) {\n  const lines = text.split('\\n');\n  const sections = [];\n  const headings = [];\n  \n  // Collect all markdown headings\n  lines.forEach(function(line, index) {\n    const match = line.match(/^(#{1,6})\\s+(.+)$/);\n    if (match) {\n      headings.push({\n        lineIndex: index,\n        level: match[1].length,\n        title: match[2].trim()\n      });\n    }\n  });\n  \n  // Strategy: Adaptive filtering based on heading count\n  // Goal: Create 8-25 well-sized sections for optimal LLM processing\n  let sectionHeadings = headings;\n  \n  if (headings.length > 100) {\n    // Very many headings - only use H1 as section boundaries\n    sectionHeadings = headings.filter(function(h) { return h.level === 1; });\n    \n    // If still too many or too few H1s, fallback to H1+H2\n    if (sectionHeadings.length > 25 || sectionHeadings.length < 3) {\n      sectionHeadings = headings.filter(function(h) { return h.level <= 2; });\n    }\n  } else if (headings.length > 50) {\n    // Many headings - use H1 and H2\n    sectionHeadings = headings.filter(function(h) { return h.level <= 2; });\n  } else if (headings.length > 20) {\n    // Moderate number - use H1, H2, H3\n    sectionHeadings = headings.filter(function(h) { return h.level <= 3; });\n  }\n  \n  // Further refinement: If we still have too many sections, increase min word count\n  const MIN_WORDS = sectionHeadings.length > 40 ? 200 : \n                    sectionHeadings.length > 25 ? 150 : 100;\n  \n  // If we have good section headings, use them as boundaries\n  if (sectionHeadings.length >= 3) {\n    for (let i = 0; i < sectionHeadings.length; i++) {\n      const heading = sectionHeadings[i];\n      const nextHeading = sectionHeadings[i + 1];\n      \n      const startLine = heading.lineIndex;\n      const endLine = nextHeading ? nextHeading.lineIndex - 1 : lines.length - 1;\n      \n      const content = lines\n        .slice(startLine + 1, endLine + 1)\n        .join('\\n')\n        .trim();\n      \n      // Only include sections with meaningful content\n      const wordCount = content.split(/\\s+/).length;\n      if (wordCount >= MIN_WORDS) {\n        sections.push({\n          level: heading.level,\n          title: heading.title,\n          content: content,\n          startLine: startLine,\n          endLine: endLine\n        });\n      }\n    }\n  }\n  \n  // Quality check: If we have too many sections, merge smaller adjacent ones\n  if (sections.length > 25) {\n    sections = mergeSmallSections(sections, 25);\n  }\n  \n  // Fallback: if no good sections found, use intelligent chunking\n  if (sections.length < 3) {\n    sections.push(...intelligentChunk(text));\n  }\n  \n  return sections;\n}\n\n/**\n * Merge small adjacent sections to reduce total count\n */\nfunction mergeSmallSections(sections, targetCount) {\n  if (sections.length <= targetCount) return sections;\n  \n  // Sort sections by word count\n  const sorted = sections.map(function(s, idx) {\n    const wordCount = s.content.split(/\\s+/).length;\n    return { section: s, wordCount: wordCount, originalIndex: idx };\n  });\n  \n  sorted.sort(function(a, b) { return a.wordCount - b.wordCount; });\n  \n  // Merge smallest sections with their neighbors\n  const toMerge = sections.length - targetCount;\n  const merged = [...sections];\n  let mergeCount = 0;\n  \n  for (let i = 0; i < sorted.length && mergeCount < toMerge; i++) {\n    const idx = sorted[i].originalIndex;\n    \n    // Skip if already merged\n    if (!merged[idx]) continue;\n    \n    // Merge with next section if available\n    if (idx < merged.length - 1 && merged[idx + 1]) {\n      merged[idx + 1].content = merged[idx].content + '\\n\\n' + merged[idx + 1].content;\n      merged[idx] = null;\n      mergeCount++;\n    }\n  }\n  \n  // Filter out null entries\n  return merged.filter(function(s) { return s !== null; });\n}\n\n/**\n * Intelligent chunking for documents without clear structure\n */\nfunction intelligentChunk(text) {\n  const chunks = [];\n  const paragraphs = text.split(/\\n\\n+/);\n  \n  let currentChunk = {\n    title: 'Section 1',\n    level: 1,\n    content: [],\n    wordCount: 0\n  };\n  \n  const TARGET_WORDS = 400;\n  const MIN_WORDS = 200;\n  const MAX_WORDS = 800;\n  \n  paragraphs.forEach(function(para) {\n    const trimmed = para.trim();\n    if (!trimmed) return;\n    \n    const words = trimmed.split(/\\s+/).length;\n    const hasTable = /\\[\\[TABLE_\\d+\\]\\]/.test(trimmed);\n    \n    // Tables get their own section if current chunk is substantial\n    if (hasTable && currentChunk.wordCount > MIN_WORDS) {\n      chunks.push({\n        level: 1,\n        title: currentChunk.title,\n        content: currentChunk.content.join('\\n\\n')\n      });\n      \n      currentChunk = {\n        title: 'Section ' + (chunks.length + 2),\n        level: 1,\n        content: [trimmed],\n        wordCount: words\n      };\n      return;\n    }\n    \n    currentChunk.content.push(trimmed);\n    currentChunk.wordCount += words;\n    \n    // Create new chunk if we've hit target size\n    if (currentChunk.wordCount >= TARGET_WORDS) {\n      chunks.push({\n        level: 1,\n        title: currentChunk.title,\n        content: currentChunk.content.join('\\n\\n')\n      });\n      \n      currentChunk = {\n        title: 'Section ' + (chunks.length + 2),\n        level: 1,\n        content: [],\n        wordCount: 0\n      };\n    }\n  });\n  \n  // Add remaining content\n  if (currentChunk.wordCount > 0) {\n    chunks.push({\n      level: 1,\n      title: currentChunk.title,\n      content: currentChunk.content.join('\\n\\n')\n    });\n  }\n  \n  return chunks;\n}\n\n// ============================================================================\n// PHASE 5: LLM-OPTIMIZED OUTPUT FORMATTING\n// ============================================================================\n\n/**\n * Build final LLM-optimized output - clean content only, no metadata headers\n */\nfunction buildLLMOutput(sections, tables, metadata) {\n  let output = '';\n  \n  // Just add sections with their content - no section numbers or metadata\n  sections.forEach(function(section, index) {\n    // Add section heading from the document itself\n    const headingMarker = '#'.repeat(section.level);\n    output += headingMarker + ' ' + section.title + '\\n\\n';\n    \n    // Section content with inline table rendering\n    const content = section.content;\n    const parts = content.split(/(\\[\\[TABLE_\\d+\\]\\])/g);\n    \n    parts.forEach(function(part) {\n      const tableMatch = part.match(/\\[\\[TABLE_(\\d+)\\]\\]/);\n      \n      if (tableMatch) {\n        const tableId = parseInt(tableMatch[1]);\n        const table = tables.find(function(t) { return t.id === tableId; });\n        \n        if (table) {\n          output += renderTableForLLM(table);\n        }\n      } else if (part.trim()) {\n        output += part.trim() + '\\n\\n';\n      }\n    });\n    \n    // No section separators - just natural flow\n  });\n  \n  return output.trim();\n}\n\n/**\n * Render table in LLM-friendly format\n */\nfunction renderTableForLLM(table) {\n  let output = '**TABLE ' + table.id + '**\\n\\n';\n  \n  // Render headers if present\n  if (table.hasHeaders && table.headers.length > 0) {\n    output += '**Headers:** ' + table.headers.join(' | ') + '\\n\\n';\n  }\n  \n  // Render data rows\n  output += '**Data:**\\n\\n';\n  table.rows.forEach(function(row, index) {\n    output += (index + 1) + '. ' + row.join(' | ') + '\\n';\n  });\n  \n  output += '\\n';\n  return output;\n}\n\n/**\n * Create structured splits for downstream processing\n */\nfunction createStructuredSplits(sections, tables) {\n  return sections.map(function(section, index) {\n    // Find tables in this section\n    const sectionTables = [];\n    const tableMatches = section.content.match(/\\[\\[TABLE_(\\d+)\\]\\]/g) || [];\n    \n    tableMatches.forEach(function(match) {\n      const tableId = parseInt(match.match(/\\d+/)[0]);\n      const table = tables.find(function(t) { return t.id === tableId; });\n      if (table) {\n        sectionTables.push({\n          id: table.id,\n          headers: table.headers,\n          rows: table.rows\n        });\n      }\n    });\n    \n    // Clean content (remove table tokens)\n    const cleanContent = section.content.replace(/\\[\\[TABLE_\\d+\\]\\]/g, '').trim();\n    \n    return {\n      section_index: index + 1,\n      section_title: section.title,\n      section_level: section.level,\n      word_count: cleanContent.split(/\\s+/).length,\n      has_tables: sectionTables.length > 0,\n      table_count: sectionTables.length,\n      tables: sectionTables,\n      content: cleanContent\n    };\n  });\n}\n\n// ============================================================================\n// MAIN PROCESSING PIPELINE\n// ============================================================================\n\n/**\n * Main entry point - processes raw markdown through all phases\n */\nfunction processMarkdown(rawMarkdown) {\n  // Phase 1: Normalization & Cleaning\n  let text = normalizeEncoding(rawMarkdown);\n  text = removeLandingAiArtifacts(text);\n  text = removeDocumentArtifacts(text);\n  text = removeOCRArtifacts(text);\n  text = fixFormattingIssues(text);\n  text = normalizeWhitespace(text);\n  \n  // Phase 2: Heading Normalization\n  text = normalizeHeadings(text);\n  text = normalizeHeadingLevels(text);\n  \n  // Phase 3: Table Extraction\n  const tableResult = extractAndNormalizeTables(text);\n  text = tableResult.text;\n  const tables = tableResult.tables;\n  \n  // Phase 4: Section Detection\n  const sections = detectSections(text);\n  \n  // Determine processing quality\n  const metadata = {\n    method: sections.length >= 3 ? 'hierarchical_sections' : 'intelligent_chunking',\n    quality: sections.length >= 5 ? 'HIGH' : sections.length >= 3 ? 'MEDIUM' : 'LOW',\n    section_count: sections.length,\n    table_count: tables.length\n  };\n  \n  // Phase 5: Build Outputs\n  const llmOptimized = buildLLMOutput(sections, tables, metadata);\n  const structuredSplits = createStructuredSplits(sections, tables);\n  \n  return {\n    markdown_raw: rawMarkdown,\n    markdown_cleaned: text,\n    markdown_llm_optimized: llmOptimized,\n    structured_splits: structuredSplits,\n    tables: tables,\n    metadata: metadata\n  };\n}\n\n// ============================================================================\n// N8N INTEGRATION\n// ============================================================================\n\n// Get input from n8n\nconst input = $input.first().json;\nconst rawMarkdown = input.manual_markdown || input.markdown || input.raw_markdown;\n\nif (!rawMarkdown) {\n  throw new Error('No markdown input provided. Expected: manual_markdown, markdown, or raw_markdown field');\n}\n\n// Process the markdown\nconst result = processMarkdown(rawMarkdown);\n\n// Return result for next node\nreturn [{\n  json: {\n    document_name: input.document_name || 'document',\n    ...result\n  }\n}];\n"
+      },
+      "id": "6c0de0e9-93ac-42ab-8852-6371ce0f4283",
+      "name": "Prepare Markdown (Optimise + Splits + Figures)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1488,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -816,
+        -32
+      ],
+      "id": "b5999060-1de1-4275-9373-40c1251f79ed",
+      "name": "OpenRouter Chat Model1",
+      "credentials": {
+        "openRouterApi": {
+          "id": "MVdnsILQzhTW7ewd",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "text": "=# System Prompt: Unified Company & Financial Information Extraction\n\n## Role\n\nYou are an expert **corporate document analyst and financial intelligence specialist**, trained to extract **accurate, structured company identification, classification, and annual financial data** from corporate documents using **rigorous validation protocols and transparent confidence scoring**.\n\n---\n\n## Objective\n\nFrom the provided document, extract:\n\n1. **Core company identification & classification metadata**\n2. **Annual financial and operational metrics for a specific fiscal year**\n\nApply strict source verification, unit normalization, hierarchical sourcing rules, and confidence-weighted extraction.\n\n---\n\n## Section 1: Company Identification & Classification\n\n### Required Fields\n\n#### **company_name**\n- Full official legal entity name exactly as stated in the document\n- **Must include** legal suffix (Inc., Ltd., PLC, Corp., S.A., GmbH, etc.)\n- Do not abbreviate or shorten\n- Example: *Apple Inc.*, not *Apple*\n\n#### **country**\n- Country of incorporation or registered headquarters\n- Use **full country name** (e.g., *United Kingdom*, not *UK* or *GB*)\n- If multiple countries mentioned, prioritize:\n  1. Country of incorporation\n  2. Headquarters location\n  3. Primary operating jurisdiction\n\n#### **exchange**\n- Primary stock exchange listing\n- Use **standard exchange codes**: NYSE, NASDAQ, LSE, TSE, HKEX, Euronext, etc.\n- If multiple listings exist, select the primary exchange\n- Leave **empty** for private companies or unlisted entities\n\n#### **industry**\n- Primary business sector or industry classification\n- Use recognized taxonomy (GICS, NAICS, or standard industry terms)\n- Balance specificity with clarity (e.g., *Pharmaceuticals*, *Renewable Energy*, *Commercial Banking*)\n- Avoid overly granular subcategories unless critical to understanding\n\n---\n\n## Section 2: Annual Financial & Operational Metrics\n\n### Required Fields\n\n#### **year**\n- Fiscal year as a **4-digit integer** (e.g., 2023)\n- If fiscal year differs from calendar year, record the **fiscal year number**\n- Example: FY ending March 2024 → `2024`\n\n#### **revenue**\n- Total annual revenue for the stated fiscal year\n- Convert to **full numerical value** (no abbreviations)\n- **Must include ISO 4217 currency code** (USD, EUR, GBP, JPY, etc.)\n- Example: `{\"value\": 394328000000, \"currency\": \"USD\"}`\n\n#### **profit_net**\n- Net profit (or loss) after tax for the fiscal year\n- Convert to **full numerical value**\n- **Negative values** indicate net losses\n- **Must include currency code**\n- Example: `{\"value\": -1250000000, \"currency\": \"EUR\"}` for a loss\n\n### Optional Fields\n\n#### **market_capitalisation**\n- Market capitalization at fiscal year-end\n- Convert to **full numerical value** with currency code\n- Use year-end closing market cap when available\n- Set to `null` if:\n  - Company is private\n  - Data not disclosed\n  - Insufficient confidence (<0.50)\n\n#### **employees**\n- Total headcount at fiscal year-end\n- Use year-end figure if stated; otherwise use annual average\n- **Integer values only** (no decimals)\n- Example: `125000`, not `125k` or `125,000.5`\n\n---\n\n## Global Extraction Rules\n\n### 1. Confidence Scoring (Mandatory)\n\n**Every extracted field must include a confidence score between 0.0 and 1.0.**\n\n#### Company Identification Fields\n\n| Score Range | Criteria |\n|-------------|----------|\n| **0.90 – 1.00** | Explicitly stated in official document sections (letterhead, cover page, legal notices) |\n| **0.70 – 0.89** | Strong contextual evidence across multiple sections |\n| **0.50 – 0.69** | Reasonable inference from indirect references |\n| **< 0.50** | Leave field **empty** or `null` |\n\n#### Financial & Operational Fields\n\n| Score Range | Criteria |\n|-------------|----------|\n| **0.95 – 1.00** | Audited financial statements, certified reports |\n| **0.85 – 0.94** | Financial summary tables, official highlights |\n| **0.70 – 0.84** | Derived from detailed breakdowns or segment data |\n| **0.50 – 0.69** | Estimated from partial data or management commentary |\n| **< 0.50** | Leave field **`null`** |\n\n---\n\n### 2. Unit & Number Conversion (Strict Normalization)\n\n**Always convert abbreviated financial figures to full numerical values.**\n\n#### Conversion Examples:\n- `\"USD 2.5 billion\"` → `2500000000`\n- `\"EUR 850 thousand\"` → `850000`\n- `\"¥45.3 trillion\"` → `45300000000000`\n- `\"£1.2M\"` → `1200000`\n\n**Preservation Rule:**\n- Record the original stated unit in the `unit_stated` field for traceability\n- Example: `{\"value\": 2500000000, \"currency\": \"USD\", \"unit_stated\": \"billions\"}`\n\n---\n\n### 3. Currency Rules\n\n1. **Primary Currency**: Use the explicitly stated consolidated reporting currency\n2. **Multiple Currencies**: If multiple currencies appear:\n   - Use the currency of the consolidated financial statements\n   - Note segment-specific currencies in source tracking\n3. **Default Rule**: If currency not stated, infer from:\n   - Company's country of incorporation\n   - Primary operating market\n   - Historical reporting patterns\n\n---\n\n### 4. Source Hierarchy (Prioritization Order)\n\nWhen multiple values exist for the same metric, prioritize sources in this order:\n\n1. **Audited consolidated financial statements**\n2. **Annual report financial highlights / key metrics summary**\n3. **Executive summary or MD&A (Management Discussion & Analysis)**\n4. **Narrative sections (CEO letter, business review)**\n5. **Footnotes and disclosures**\n\n**Never extract from:**\n- Projections or forward-looking statements\n- Unverified analyst estimates\n- Marketing materials\n\n---\n\n### 5. Validation Rules (Quality Assurance)\n\n| Field | Validation Requirement |\n|-------|------------------------|\n| **company_name** | Must be full legal name with suffix (not abbreviation-only) |\n| **country** | Must be valid, internationally recognized country name |\n| **exchange** | Must be real, active trading venue (verify code accuracy) |\n| **industry** | Must be recognized business sector per standard taxonomy |\n| **year** | Must be 4-digit integer between 1900 and current year + 1 |\n| **revenue** | Must be positive number (or zero); cannot be negative |\n| **profit_net** | Can be negative (losses); must include sign if applicable |\n| **market_capitalisation** | Must be positive if provided |\n| **employees** | Must be positive integer |\n| **confidence** | All fields: if confidence < 0.50, field value must be `null` or omitted |\n\n---\n\n## Output Format (Strict)\n\n### Requirements\n\n- Return **ONLY valid JSON**\n- No markdown code fences\n- No explanatory text before or after JSON\n- No comments within JSON\n- UTF-8 encoding\n\n## Processing Instructions\n\n1. **Read the entire document** before extracting any data\n2. **Identify the fiscal year** being reported\n3. **Locate authoritative sections** (financial statements, highlights)\n4. **Extract data** according to field definitions and validation rules\n5. **Apply confidence scoring** to each field\n6. **Validate all extracted values** against quality rules\n7. **Convert units** to full numerical values\n8. **Structure output** as valid JSON matching the schema exactly\n9. **Return JSON\n\n# Document Content\n\n{{ $json.markdown_llm_clean }}\n\n---",
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"title\": \"Company Profile and Financial Extraction\",\n  \"description\": \"Unified schema for validating extracted company identification, classification, and annual financial metrics\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"company\": {\n      \"type\": \"object\",\n      \"description\": \"Company identification and classification data\",\n      \"properties\": {\n        \"company_name\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": \"string\",\n              \"minLength\": 1,\n              \"description\": \"Official legal company name\"\n            },\n            \"confidence\": {\n              \"type\": \"number\",\n              \"minimum\": 0,\n              \"maximum\": 1\n            },\n            \"source\": {\n              \"type\": \"string\",\n              \"description\": \"Source document type (e.g., Annual Report)\"\n            }\n          },\n          \"required\": [\"value\", \"confidence\"],\n          \"additionalProperties\": false\n        },\n        \"exchange\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": \"string\",\n              \"description\": \"Primary stock exchange code (empty if private)\"\n            },\n            \"confidence\": {\n              \"type\": \"number\",\n              \"minimum\": 0,\n              \"maximum\": 1\n            },\n            \"source\": {\n              \"type\": \"string\",\n              \"description\": \"Source document type (e.g., Annual Report)\"\n            }\n          },\n          \"required\": [\"value\", \"confidence\"],\n          \"additionalProperties\": false\n        },\n        \"country\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": \"string\",\n              \"minLength\": 1,\n              \"description\": \"Country of headquarters or incorporation\"\n            },\n            \"confidence\": {\n              \"type\": \"number\",\n              \"minimum\": 0,\n              \"maximum\": 1\n            },\n            \"source\": {\n              \"type\": \"string\",\n              \"description\": \"Source document type (e.g., Annual Report)\"\n            }\n          },\n          \"required\": [\"value\", \"confidence\"],\n          \"additionalProperties\": false\n        },\n        \"industry\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": \"string\",\n              \"description\": \"Primary industry or business sector\"\n            },\n            \"confidence\": {\n              \"type\": \"number\",\n              \"minimum\": 0,\n              \"maximum\": 1\n            },\n            \"source\": {\n              \"type\": \"string\",\n              \"description\": \"Source document type (e.g., Annual Report)\"\n            }\n          },\n          \"required\": [\"value\", \"confidence\"],\n          \"additionalProperties\": false\n        },\n        \"source_document_url\": {\n          \"type\": \"string\",\n          \"description\": \"URL of the source document if available\"\n        }\n      },\n      \"required\": [\"company_name\", \"exchange\", \"country\", \"industry\"],\n      \"additionalProperties\": false\n    },\n\n    \"financials\": {\n      \"type\": \"object\",\n      \"description\": \"Annual financial and operational metrics\",\n      \"properties\": {\n        \"year\": {\n          \"type\": \"integer\",\n          \"minimum\": 1900,\n          \"maximum\": 2100,\n          \"description\": \"Fiscal year as 4-digit integer\"\n        },\n        \"revenue\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": \"number\",\n              \"minimum\": 0\n            },\n            \"currency\": {\n              \"type\": \"string\",\n              \"pattern\": \"^[A-Z]{3}$\"\n            },\n            \"confidence\": {\n              \"type\": \"number\",\n              \"minimum\": 0,\n              \"maximum\": 1\n            },\n            \"source\": {\n              \"type\": \"string\",\n              \"description\": \"Source document type (e.g., Annual Report)\"\n            },\n            \"unit_stated\": {\n              \"type\": \"string\",\n              \"enum\": [\"actual\", \"thousands\", \"millions\", \"billions\"]\n            }\n          },\n          \"required\": [\"value\", \"currency\", \"confidence\"],\n          \"additionalProperties\": false\n        },\n        \"profit_net\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": \"number\",\n              \"description\": \"Net profit after tax (negative for losses)\"\n            },\n            \"currency\": {\n              \"type\": \"string\",\n              \"pattern\": \"^[A-Z]{3}$\"\n            },\n            \"confidence\": {\n              \"type\": \"number\",\n              \"minimum\": 0,\n              \"maximum\": 1\n            },\n            \"source\": {\n              \"type\": \"string\",\n              \"description\": \"Source document type (e.g., Annual Report)\"\n            },\n            \"unit_stated\": {\n              \"type\": \"string\",\n              \"enum\": [\"actual\", \"thousands\", \"millions\", \"billions\"]\n            }\n          },\n          \"required\": [\"value\", \"currency\", \"confidence\"],\n          \"additionalProperties\": false\n        },\n        \"market_capitalisation\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": [\"number\", \"null\"],\n              \"minimum\": 0\n            },\n            \"currency\": {\n              \"type\": [\"string\", \"null\"],\n              \"pattern\": \"^[A-Z]{3}$\"\n            },\n            \"confidence\": {\n              \"type\": \"number\",\n              \"minimum\": 0,\n              \"maximum\": 1\n            },\n            \"source\": {\n              \"type\": \"string\",\n              \"description\": \"Source document type (e.g., Annual Report)\"\n            },\n            \"unit_stated\": {\n              \"type\": \"string\",\n              \"enum\": [\"actual\", \"thousands\", \"millions\", \"billions\"]\n            }\n          },\n          \"required\": [\"value\", \"confidence\"],\n          \"additionalProperties\": false\n        },\n        \"employees\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": [\"integer\", \"null\"],\n              \"minimum\": 0\n            },\n            \"confidence\": {\n              \"type\": \"number\",\n              \"minimum\": 0,\n              \"maximum\": 1\n            },\n            \"source\": {\n              \"type\": \"string\",\n              \"description\": \"Source document type (e.g., Annual Report)\"\n            }\n          },\n          \"required\": [\"value\", \"confidence\"],\n          \"additionalProperties\": false\n        }\n      },\n      \"required\": [\"year\", \"revenue\", \"profit_net\"],\n      \"additionalProperties\": false\n    },\n\n    \"extraction_metadata\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"extracted_at\": {\n          \"type\": \"string\",\n          \"format\": \"date-time\"\n        },\n        \"document_type\": {\n          \"type\": \"string\",\n          \"enum\": [\n            \"annual_report\",\n            \"10-K\",\n            \"10-Q\",\n            \"financial_statements\",\n            \"prospectus\",\n            \"investor_presentation\",\n            \"other\"\n          ]\n        },\n        \"fiscal_year_end\": {\n          \"type\": \"string\",\n          \"format\": \"date\"\n        },\n        \"reporting_standard\": {\n          \"type\": \"string\",\n          \"enum\": [\"IFRS\", \"US GAAP\", \"local GAAP\", \"other\"]\n        }\n      },\n      \"additionalProperties\": false\n    }\n  },\n  \"required\": [\"company\", \"financials\"],\n  \"additionalProperties\": false\n}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        -816,
+        -304
+      ],
+      "id": "3126d772-c702-4f0f-bf42-fdee894250d6",
+      "name": "Company Extractor"
+    },
+    {
+      "parameters": {
+        "text": "=You are an expert at analyzing and extracting structured information from Annual Reports, Corporate Governance Reports, and Directors’ Remuneration disclosures.\n\nYour task is to extract **Board Director–level data** for a given company and fiscal year and return it in a **strict JSON format** that exactly matches the provided schema.\n\nEach JSON object represents **one board director**.\n\nThis data will be stored in a relational database table, therefore:\n- Field names MUST match exactly\n- ALL fields MUST be present in EVERY object\n- No additional fields are allowed\n- Output must be valid JSON only\n\n---\n\n## Board Directors — Fields to Extract\n\n### Identification\n- **fact_id** — Provided externally (do NOT infer or change)\n- **director_name** — Full official name of the board director\n\n### Demographics\n- **nationality**\n- **ethnicity** — Arab | Asian | Western | Other\n- **local_expat** — Local if nationality equals company HQ country, otherwise Expat\n- **gender** — Male | Female | not-available\n- **age** — Explicitly stated or confidently inferred; otherwise 0\n\n### Board Role & Profile\n- **board_role** — Chairman, Vice Chairman, Member, Managing Director, etc.\n- **director_type** — Executive | Non-Executive | Independent\n- **skills** — Listed or inferred skills/expertise (comma-separated text)\n\n### Attendance\n- **board_meetings_attended** — Number of board meetings attended (0 if not disclosed)\n\n### Remuneration (Annual, FY)\n- **retainer_fee**\n- **benefits_in_kind**\n- **attendance_allowance**\n- **expense_allowance**\n- **director_board_committee_fee**\n- **variable_remuneration**\n- **variable_remuneration_description**\n- **other_remuneration**\n- **other_remuneration_description**\n- **total_fee**\n\n---\n\n## Rules & Computations\n\n- If a value is **not explicitly disclosed**, use:\n  - Empty string `\"\"` for text fields\n  - `0` for numeric fields\n- Do NOT fabricate or estimate monetary values\n- Do NOT guess ages or remuneration\n- **total_fee**:\n  - Use the disclosed total if available\n  - Otherwise calculate as the sum of all remuneration components\n- **gender inference**:\n  - Infer only from clear honorifics (Mr., Ms., Sheikh, Dr.)\n  - If uncertain, set as `not-available`\n- **local_expat**:\n  - Determine by comparing nationality with company headquarters country\n\n---\n\n## Output Rules (STRICT)\n\n- Output **ONLY valid JSON**\n- Output must be a **JSON array**\n- Each array item = **one director**\n- Every object MUST include **ALL fields**\n- No null values\n- No missing keys\n- No additional properties\n- No markdown, explanations, or comments outside JSON\n\n---\n\n## Source Content\n\n----------------------\n{{ $('get_clean_markdown').item.json.markdown_llm_clean }}\n----------------------\n",
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"title\": \"Board Directors Table Schema\",\n  \"description\": \"Schema aligned with public.board_directors table\",\n  \"type\": \"array\",\n  \"items\": {\n    \"type\": \"object\",\n    \"properties\": {\n      \"fact_id\": {\n        \"type\": \"integer\",\n        \"description\": \"Foreign key reference to company-year fact table\"\n      },\n      \"director_name\": {\n        \"type\": \"string\"\n      },\n      \"nationality\": {\n        \"type\": \"string\"\n      },\n      \"ethnicity\": {\n        \"type\": \"string\"\n      },\n      \"local_expat\": {\n        \"type\": \"string\"\n      },\n      \"gender\": {\n        \"type\": \"string\",\n        \"enum\": [\"Male\", \"Female\", \"not-available\"]\n      },\n      \"age\": {\n        \"type\": \"integer\",\n        \"minimum\": 0\n      },\n      \"board_role\": {\n        \"type\": \"string\"\n      },\n      \"director_type\": {\n        \"type\": \"string\"\n      },\n      \"skills\": {\n        \"type\": \"string\"\n      },\n      \"board_meetings_attended\": {\n        \"type\": \"integer\",\n        \"minimum\": 0\n      },\n      \"retainer_fee\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"benefits_in_kind\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"attendance_allowance\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"expense_allowance\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"director_board_committee_fee\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"variable_remuneration\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"variable_remuneration_description\": {\n        \"type\": \"string\"\n      },\n      \"other_remuneration\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"other_remuneration_description\": {\n        \"type\": \"string\"\n      },\n      \"total_fee\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      }\n    },\n    \"required\": [\n      \"fact_id\",\n      \"director_name\",\n      \"nationality\",\n      \"ethnicity\",\n      \"local_expat\",\n      \"gender\",\n      \"age\",\n      \"board_role\",\n      \"director_type\",\n      \"skills\",\n      \"board_meetings_attended\",\n      \"retainer_fee\",\n      \"benefits_in_kind\",\n      \"attendance_allowance\",\n      \"expense_allowance\",\n      \"director_board_committee_fee\",\n      \"variable_remuneration\",\n      \"variable_remuneration_description\",\n      \"other_remuneration\",\n      \"other_remuneration_description\",\n      \"total_fee\"\n    ],\n    \"additionalProperties\": false\n  }\n}\n",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        -1552,
+        672
+      ],
+      "id": "0849852c-33a6-45ad-a294-b15826b9f759",
+      "name": "Information Extractor"
+    },
+    {
+      "parameters": {
+        "content": "## Board Members Extraction",
+        "height": 688,
+        "width": 1792
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1792,
+        448
+      ],
+      "typeVersion": 1,
+      "id": "510f6d6b-5e77-47f6-9b75-96fbdb681f6c",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "text": "=# System Prompt — Board Committees Data Extraction\n\nYou are an expert at analyzing and extracting structured information from Annual Reports, Corporate Governance Reports, and Board Committee disclosures.\n\nYour task is to extract **Board Committee–level data** for a given company and fiscal year and return it in a **strict JSON format** that exactly matches the provided schema.\n\nEach JSON object represents **one committee membership of one board member**  \n(Example: the same person appearing in two committees = two records).\n\nThis data will be stored in a relational database table, therefore:\n- Field names MUST match exactly\n- ALL fields MUST be present in EVERY object\n- No additional fields are allowed\n- Output must be valid JSON only\n\n---\n\n## Board Committees — Fields to Extract\n\n### Identification\n- **fact_id** — Provided externally (do NOT infer or change)\n- **member_name** — Full official name of the committee member\n\n### Demographics\n- **nationality**\n- **ethnicity** — Arab | Asian | Western | Other\n- **local_expat** — Local if nationality equals company HQ country, otherwise Expat\n- **gender** — Male | Female | not-available\n- **age** — Explicitly stated or confidently inferred; otherwise 0\n\n### Committee Details\n- **committee_name** — Audit Committee, Nomination Committee, Remuneration Committee, Risk Committee, etc.\n- **committee_role** — Chair, Member, Vice Chair, Secretary, etc.\n- **committee_meetings_attended** — Number of committee meetings attended\n\n### Committee Remuneration (Annual, FY)\n- **committee_retainer_fee** — Fixed annual committee retainer\n- **committee_allowances** — Per-meeting or attendance allowances\n- **committee_total_fee** — Total committee remuneration\n\n---\n\n## Rules & Computations\n\n- If a value is **not explicitly disclosed**, use:\n  - Empty string `\"\"` for text fields\n  - `0` for numeric fields\n- Do NOT fabricate or estimate monetary values\n- Do NOT infer committee fees if not disclosed\n- **committee_total_fee**:\n  - Use the reported total if disclosed\n  - Otherwise calculate as:  \n    committee_retainer_fee + committee_allowances\n- **gender inference**:\n  - Infer only from clear honorifics (Mr., Ms., Sheikh, Dr.)\n  - If uncertain, set as `not-available`\n- **local_expat**:\n  - Determine by comparing nationality with company headquarters country\n\n---\n\n## Output Rules (STRICT)\n\n- Output **ONLY valid JSON**\n- Output must be a **JSON array**\n- Each array item = **one committee membership**\n- Every object MUST include **ALL fields**\n- No null values\n- No missing keys\n- No additional properties\n- No markdown, explanations, or comments outside JSON\n\n---\n\n## Source Content\n\n----------------------\n{{ $('get_clean_markdown').item.json.markdown_llm_clean }}\n----------------------\n",
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"title\": \"Board Committees Table Schema\",\n  \"description\": \"Schema aligned with public.board_committees table\",\n  \"type\": \"array\",\n  \"items\": {\n    \"type\": \"object\",\n    \"properties\": {\n      \"fact_id\": {\n        \"type\": \"integer\",\n        \"description\": \"Foreign key reference to company-year fact table\"\n      },\n      \"member_name\": {\n        \"type\": \"string\"\n      },\n      \"nationality\": {\n        \"type\": \"string\"\n      },\n      \"ethnicity\": {\n        \"type\": \"string\"\n      },\n      \"local_expat\": {\n        \"type\": \"string\"\n      },\n      \"gender\": {\n        \"type\": \"string\",\n        \"enum\": [\"Male\", \"Female\", \"not-available\"]\n      },\n      \"age\": {\n        \"type\": \"integer\",\n        \"minimum\": 0\n      },\n      \"committee_name\": {\n        \"type\": \"string\"\n      },\n      \"committee_role\": {\n        \"type\": \"string\"\n      },\n      \"committee_meetings_attended\": {\n        \"type\": \"integer\",\n        \"minimum\": 0\n      },\n      \"committee_retainer_fee\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"committee_allowances\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      },\n      \"committee_total_fee\": {\n        \"type\": \"number\",\n        \"minimum\": 0\n      }\n    },\n    \"required\": [\n      \"fact_id\",\n      \"member_name\",\n      \"nationality\",\n      \"ethnicity\",\n      \"local_expat\",\n      \"gender\",\n      \"age\",\n      \"committee_name\",\n      \"committee_role\",\n      \"committee_meetings_attended\",\n      \"committee_retainer_fee\",\n      \"committee_allowances\",\n      \"committee_total_fee\"\n    ],\n    \"additionalProperties\": false\n  }\n}\n",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        160,
+        672
+      ],
+      "id": "f1c4cc76-804b-4564-9af5-00e93d17ef06",
+      "name": "Information Extractor1"
+    },
+    {
+      "parameters": {
+        "content": "## Committee Members Extraction",
+        "height": 688,
+        "width": 1568,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        48,
+        448
+      ],
+      "typeVersion": 1,
+      "id": "0433bd1d-1091-4ad8-bab6-d1775f82ba82",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a8a4257c-8842-4ba7-add5-113b2e268a64",
+              "name": "output",
+              "value": "={{ $json.output }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        592,
+        672
+      ],
+      "id": "63683487-aac3-483b-8bc6-037c2ff695a8",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1120,
+        480
+      ],
+      "id": "0331eec0-3524-4e92-956a-b138153e9c54",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "name": "={{ \"Board_\"+$('Download file').item.json.originalFilename + $now.format('dd-LL-yyyy-HH-mm-ss') + \".json\"}}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "1ESnuY4q0A2dMR39vyQlGgIiC85pFqfso",
+          "mode": "list",
+          "cachedResultName": "Test_output",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1ESnuY4q0A2dMR39vyQlGgIiC85pFqfso"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -784,
+        480
+      ],
+      "id": "c6f598b4-1524-4609-bb35-8c0c8afebf01",
+      "name": "Upload file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "ISIWL8vUTCVWzMYb",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        592,
+        512
+      ],
+      "id": "ebe18ab8-af9f-48e9-92c3-b698fea8c15f",
+      "name": "Convert to File1"
+    },
+    {
+      "parameters": {
+        "name": "={{ \"Committee_\"+$('Download file').item.json.originalFilename + $now.format('dd-LL-yyyy-HH-mm-ss') + \".json\"}}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "1ESnuY4q0A2dMR39vyQlGgIiC85pFqfso",
+          "mode": "list",
+          "cachedResultName": "Test_output",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1ESnuY4q0A2dMR39vyQlGgIiC85pFqfso"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        896,
+        512
+      ],
+      "id": "c09ce914-08a0-4e13-8fcb-993179d10214",
+      "name": "Upload file1",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "ISIWL8vUTCVWzMYb",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all()[0].json.output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        672
+      ],
+      "id": "f1229714-a77b-4496-a31e-ca9973a6ef1d",
+      "name": "Code- Split JSON"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all()[0].json.output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        672
+      ],
+      "id": "11c310dc-716d-43de-8c7a-27bd5b0efc56",
+      "name": "Code Spilt JSON"
+    },
+    {
+      "parameters": {
+        "model": "google/gemini-2.5-pro",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -1552,
+        928
+      ],
+      "id": "c7c80645-6bfa-4a8f-a83c-7b71002de724",
+      "name": "OpenRouter Chat Model2",
+      "credentials": {
+        "openRouterApi": {
+          "id": "MVdnsILQzhTW7ewd",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "board_directors",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "fact_id",
+              "fieldValue": "={{ $('Create Company Fact').item.json.id }}"
+            },
+            {
+              "fieldId": "board_role",
+              "fieldValue": "={{ $json.board_role }}"
+            },
+            {
+              "fieldId": "director_name",
+              "fieldValue": "={{ $json.director_name }}"
+            },
+            {
+              "fieldId": "gender",
+              "fieldValue": "={{ $json.gender }}"
+            },
+            {
+              "fieldId": "director_type",
+              "fieldValue": "={{ $json.director_type }}"
+            },
+            {
+              "fieldId": "total_fee",
+              "fieldValue": "={{ $json.total_fee }}"
+            },
+            {
+              "fieldId": "board_meetings_attended",
+              "fieldValue": "={{ $json.board_meetings_attended }}"
+            },
+            {
+              "fieldId": "retainer_fee",
+              "fieldValue": "={{ $json.retainer_fee }}"
+            },
+            {
+              "fieldId": "expense_allowance",
+              "fieldValue": "={{ $json.expense_allowance }}"
+            },
+            {
+              "fieldId": "benefits_in_kind",
+              "fieldValue": "={{ $json.benefits_in_kind }}"
+            },
+            {
+              "fieldId": "director_board_committee_fee",
+              "fieldValue": "={{ $json.director_board_committee_fee }}"
+            },
+            {
+              "fieldId": "ethnicity",
+              "fieldValue": "={{ $json.ethnicity }}"
+            },
+            {
+              "fieldId": "nationality",
+              "fieldValue": "={{ $json.nationality }}"
+            },
+            {
+              "fieldId": "local_expat",
+              "fieldValue": "={{ $json.local_expat }}"
+            },
+            {
+              "fieldId": "skills",
+              "fieldValue": "={{ $json.skills }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -352,
+        672
+      ],
+      "id": "6ab934c0-b1db-4dc4-8501-c948036d722e",
+      "name": "Create a row2",
+      "credentials": {
+        "supabaseApi": {
+          "id": "6b6A4hi8qkszv0yK",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a8a4257c-8842-4ba7-add5-113b2e268a64",
+              "name": "output",
+              "value": "={{ $json.output }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1120,
+        672
+      ],
+      "id": "0a423e72-72d6-4153-bd06-5253bd97eb19",
+      "name": "Edit Fields2"
+    },
+    {
+      "parameters": {
+        "model": "google/gemini-2.5-pro",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        160,
+        912
+      ],
+      "id": "324a22d8-34e5-4fd4-8f33-a2d3bbe0ec30",
+      "name": "OpenRouter Chat Model3",
+      "credentials": {
+        "openRouterApi": {
+          "id": "MVdnsILQzhTW7ewd",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "board_committees",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "fact_id",
+              "fieldValue": "={{ $('Create Company Fact').item.json.id }}"
+            },
+            {
+              "fieldId": "member_name",
+              "fieldValue": "={{ $json.member_name }}"
+            },
+            {
+              "fieldId": "nationality",
+              "fieldValue": "={{ $json.nationality }}"
+            },
+            {
+              "fieldId": "ethnicity",
+              "fieldValue": "={{ $json.ethnicity }}"
+            },
+            {
+              "fieldId": "local_expat",
+              "fieldValue": "={{ $json.local_expat }}"
+            },
+            {
+              "fieldId": "gender",
+              "fieldValue": "={{ $json.gender }}"
+            },
+            {
+              "fieldId": "age",
+              "fieldValue": "={{ $json.age }}"
+            },
+            {
+              "fieldId": "committee_name",
+              "fieldValue": "={{ $json.committee_name }}"
+            },
+            {
+              "fieldId": "committee_role",
+              "fieldValue": "={{ $json.committee_role }}"
+            },
+            {
+              "fieldId": "committee_meetings_attended",
+              "fieldValue": "={{ $json.committee_meetings_attended }}"
+            },
+            {
+              "fieldId": "committee_retainer_fee",
+              "fieldValue": "={{ $json.committee_retainer_fee }}"
+            },
+            {
+              "fieldId": "committee_allowances",
+              "fieldValue": "={{ $json.committee_allowances }}"
+            },
+            {
+              "fieldId": "committee_total_fee",
+              "fieldValue": "={{ $json.committee_total_fee }}"
+            },
+            {
+              "fieldId": "created_at",
+              "fieldValue": "={{ new Date().toISOString() }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1392,
+        672
+      ],
+      "id": "a665c8af-fbfc-4d7e-b5c2-386bfb2dd937",
+      "name": "Create a row3",
+      "credentials": {
+        "supabaseApi": {
+          "id": "6b6A4hi8qkszv0yK",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format company name to standardized code\nconst companyName = $input.first().json.company_name?.value || $input.first().json.output?.company?.company_name?.value;\n\nif (!companyName) {\n  throw new Error('Company name not found in input');\n}\n\nconst formattedName = companyName\n  .toLowerCase()\n  .trim()\n  .replace(/\\s+/g, '_')\n  .replace(/[^a-z0-9_]/g, ''); // Remove special characters\n\nreturn [{\n  json: {\n    company_name: formattedName,\n    original_name: companyName\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        -304
+      ],
+      "id": "6b9f9028-7dd3-48e5-8ee6-ac570a988501",
+      "name": "Format Company Name"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "tableId": "companies",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "company_code",
+              "keyValue": "={{ $json.company_name }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -288,
+        -304
+      ],
+      "id": "1bddc463-9472-4b9e-97f2-cd471c119c96",
+      "name": "Get Company",
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "6b6A4hi8qkszv0yK",
+          "name": "Supabase account 2"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              },
+              "id": "6bfcf80f-cb60-4fc4-bb97-9f68cf0f4b87"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -304
+      ],
+      "id": "2ff81f29-528a-43e0-b592-eeea80bf4eae",
+      "name": "Company Exists?"
+    },
+    {
+      "parameters": {
+        "tableId": "companies",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_name",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.company.company_name }}"
+            },
+            {
+              "fieldId": "exchange",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.company.exchange }}"
+            },
+            {
+              "fieldId": "country",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.company.country }}"
+            },
+            {
+              "fieldId": "industry",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.company.industry }}"
+            },
+            {
+              "fieldId": "source_document_url",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.source_document_url? $('Company Extractor').item.json.output.source_document_url: ''}}"
+            },
+            {
+              "fieldId": "company_code",
+              "fieldValue": "={{ $('Format Company Name').item.json.company_name }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        128,
+        -144
+      ],
+      "id": "4636289e-bb3f-478f-90ec-7c11e9cf7e80",
+      "name": "Create New Company",
+      "credentials": {
+        "supabaseApi": {
+          "id": "6b6A4hi8qkszv0yK",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "company_facts",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "company_id",
+              "fieldValue": "={{ $('Company Exists?').item.json.id || $('Create New Company').item.json.id }}"
+            },
+            {
+              "fieldId": "year",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.financials.year }}"
+            },
+            {
+              "fieldId": "revenue",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.financials.revenue }}"
+            },
+            {
+              "fieldId": "profit_net",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.financials.profit_net }}"
+            },
+            {
+              "fieldId": "market_capitalisation",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.financials.market_capitalisation }}"
+            },
+            {
+              "fieldId": "employees",
+              "fieldValue": "={{ $('Company Extractor').item.json.output.financials.employees }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        768,
+        0
+      ],
+      "id": "e82b6a67-ebc8-4312-92cf-3d4979e826d7",
+      "name": "Create Company Fact",
+      "credentials": {
+        "supabaseApi": {
+          "id": "6b6A4hi8qkszv0yK",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "company_id",
+              "name": "company_id",
+              "value": "={{ $json.id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        144,
+        -432
+      ],
+      "id": "cc82e45c-9575-479a-96df-36f6c679e81c",
+      "name": "Set Existing Company ID"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "company_id",
+              "name": "company_id",
+              "value": "={{ $json.id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        368,
+        -144
+      ],
+      "id": "bcdd5d49-b0e5-487d-9d27-21149ba1edb9",
+      "name": "Set New Company ID"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1984,
+        -304
+      ],
+      "id": "8bd4c83f-f56a-4a2c-8061-0ca722a23410",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "tableId": "landing_parse_cache",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "keyValue": "84"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -1472,
+        -304
+      ],
+      "id": "de6cb9d8-fc27-481f-9017-6e781778bc19",
+      "name": "get_clean_markdown",
+      "credentials": {
+        "supabaseApi": {
+          "id": "6b6A4hi8qkszv0yK",
+          "name": "Supabase account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Prepare Markdown (Optimise + Splits + Figures)": {
+      "main": [
+        []
+      ]
+    },
+    "OpenRouter Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Company Extractor",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Company Extractor": {
+      "main": [
+        [
+          {
+            "node": "Format Company Name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Information Extractor": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Information Extractor1": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Convert to File1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Code Spilt JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File1": {
+      "main": [
+        [
+          {
+            "node": "Upload file1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code- Split JSON": {
+      "main": [
+        [
+          {
+            "node": "Create a row2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Spilt JSON": {
+      "main": [
+        [
+          {
+            "node": "Create a row3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Information Extractor",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields2": {
+      "main": [
+        [
+          {
+            "node": "Code- Split JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model3": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Information Extractor1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a row2": {
+      "main": [
+        []
+      ]
+    },
+    "Format Company Name": {
+      "main": [
+        [
+          {
+            "node": "Get Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Company": {
+      "main": [
+        [
+          {
+            "node": "Company Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Company Exists?": {
+      "main": [
+        [
+          {
+            "node": "Set Existing Company ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create New Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create New Company": {
+      "main": [
+        [
+          {
+            "node": "Set New Company ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Company Fact": {
+      "main": [
+        [
+          {
+            "node": "Information Extractor",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Information Extractor1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Existing Company ID": {
+      "main": [
+        [
+          {
+            "node": "Create Company Fact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set New Company ID": {
+      "main": [
+        [
+          {
+            "node": "Create Company Fact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "get_clean_markdown",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_clean_markdown": {
+      "main": [
+        [
+          {
+            "node": "Company Extractor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "b81cba6b-a5ef-4c1e-8664-00b733eb3ca7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "fe4cf822b922bbc95f425fd1a5f50fb2330538b7466df1c048221443979ac3d9"
+  },
+  "id": "ny0YEYbT2CxGKM3LW9LkL",
+  "tags": []
+}

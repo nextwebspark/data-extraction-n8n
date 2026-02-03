@@ -1,0 +1,872 @@
+{
+  "name": "Parser_with_OptMD_v1.5_vProduction Ready",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "1L7Wpk0eYPUUCU-cfHAK9t-S8R2wUA6ed",
+          "mode": "list",
+          "cachedResultName": "Saudi Board PDFs",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1L7Wpk0eYPUUCU-cfHAK9t-S8R2wUA6ed"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "id": "dc7faa2e-f19a-4f3e-ad3a-6593e0efe4ed",
+      "name": "Google Drive Trigger",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        -4080,
+        -144
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "hWgbyV18elpR6x5c",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json[\"id\"] }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "5ac706dd-17f4-4843-bb3b-97a813be4eab",
+      "name": "Download File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -3840,
+        -144
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "hWgbyV18elpR6x5c",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * BUILD METADATA — CANONICAL SHAPE\n * This node defines the contract for the rest of the workflow\n */\n\n// Prefer Drive-reported size, fall back to binary metadata if needed\nconst fileSize =\n  Number($json.size) ||\n  Number($binary?.data?.fileSize) ||\n  null;\n\nconsole.log('=== BUILD METADATA ===' );\nconsole.log('File ID:', $json.id);\nconsole.log('File Name:', $json.name);\nconsole.log('File Size:', fileSize);\n\nreturn {\n  json: {\n    // Canonical fields used everywhere downstream\n    file_id: $json.id,\n    document_name: $json.name,\n    mime_type: $json.mimeType,\n    file_size_bytes: fileSize,\n    drive_modified_time: $json.modifiedTime || null,\n    drive_created_time: $json.createdTime || null\n  },\n  binary: $binary\n};\n"
+      },
+      "id": "dc76cfeb-1968-4ef9-877a-98fe6a60a143",
+      "name": "Build Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3584,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "landing_parse_cache",
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "file_id",
+              "condition": "eq",
+              "keyValue": "={{$json.file_id}}"
+            }
+          ]
+        }
+      },
+      "id": "6de41237-c320-4299-8e12-b21186ae7a76",
+      "name": "Check Cache",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -3392,
+        208
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "atK6uS67YhpIOf7W",
+          "name": "Supabase account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * DIRECT CACHE CHECK WITH CONSOLE LOGGING\n * Bypass the Supabase node and check directly\n */\n\nconst metadata = $items('Build Metadata')[0].json;\nconst fileId = metadata.file_id;\n\nconsole.log('=== CHECKING CACHE ===');\nconsole.log('File ID to check:', fileId);\n\n// Get the Supabase result from the previous node\nconst supabaseResults = $items('Check Cache');\n\nconsole.log('Supabase node returned:', supabaseResults.length, 'items');\nconsole.log('Full Supabase response:', JSON.stringify(supabaseResults, null, 2));\n\nlet cacheHit = false;\nlet cacheRecord = null;\n\nif (supabaseResults && supabaseResults.length > 0) {\n  const result = supabaseResults[0].json;\n  console.log('First result:', JSON.stringify(result, null, 2));\n  \n  // Check if this is a real record with data\n  if (result && typeof result === 'object') {\n    const keys = Object.keys(result);\n    console.log('Keys in result:', keys);\n    \n    if (keys.length > 0 && result.file_id) {\n      cacheHit = true;\n      cacheRecord = result;\n      console.log('✅ CACHE HIT - Found record with file_id:', result.file_id);\n    } else if (keys.length === 0) {\n      console.log('❌ CACHE MISS - Empty object returned');\n    } else {\n      console.log('❌ CACHE MISS - No file_id in result');\n    }\n  }\n} else {\n  console.log('❌ CACHE MISS - No results from Supabase');\n}\n\nconsole.log('Final cache_hit decision:', cacheHit);\n\nreturn {\n  json: {\n    ...metadata,\n    cache_hit: cacheHit,\n    cache_record: cacheRecord,\n    debug_supabase_length: supabaseResults.length,\n    debug_raw_response: supabaseResults.length > 0 ? supabaseResults[0].json : null\n  },\n  binary: $items('Build Metadata')[0].binary\n};\n"
+      },
+      "id": "4b87ab4a-59c5-4bb0-be55-84bc755a98d7",
+      "name": "Debug Cache Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3216,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $items('Check Cache')[0]?.json?.file_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              },
+              "id": "3e925fb1-714c-4732-93d3-adadd20bef11"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4f2bfea0-ba61-4ac3-9b8c-4b3d4312b16f",
+      "name": "If Cache Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2992,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log('✅ WORKFLOW STOPPED - File already in cache');\nconsole.log('File:', $json.document_name);\nconsole.log('File ID:', $json.file_id);\n\nreturn $input.all();"
+      },
+      "id": "940075d6-6c22-4d9b-aae5-34811fe52540",
+      "name": "STOP — Cached",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2832,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.va.landing.ai/v1/ade/parse/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer eTJycThyMWo4M2FxeHE3a3h1NnR0OkFycE5SWnJJWWt4QWs1bkgwS3RvcDc2bUlyMkdHNDdz"
+            },
+            {
+              "name": "organization-id",
+              "value": "=t74be7bbi3yr"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "document",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "dpt-2-latest"
+            },
+            {
+              "name": "split_by",
+              "value": "page"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cdf16169-1993-4825-ace0-8a020e8679eb",
+      "name": "Submit to Landing.ai",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -2704,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -2512,
+        -128
+      ],
+      "id": "c01653d3-0441-430a-acc4-ccbe68129f60",
+      "name": "Merge Metadata + Job"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * COMBINE METADATA + JOB ID\n * Merge file metadata with the Landing.ai job_id\n */\n\nconst metadata = $items('Debug Cache Results')[0].json;\nconst jobResponse = $items('Submit to Landing.ai')[0].json;\n\nconsole.log('=== MERGING DATA ===');\nconsole.log('Metadata:', metadata);\nconsole.log('Job Response:', jobResponse);\n\nreturn {\n  json: {\n    // File metadata\n    file_id: metadata.file_id,\n    document_name: metadata.document_name,\n    mime_type: metadata.mime_type,\n    file_size_bytes: metadata.file_size_bytes,\n    \n    // Job info\n    job_id: jobResponse.job_id,\n    \n    // Loop control\n    retry_count: 0,\n    max_retries: 20,\n    poll_interval_sec: 60,\n    loop_start_time: Date.now(),\n    max_loop_duration_sec: 3600\n  }\n};\n"
+      },
+      "id": "9b5e303a-5d24-4d3c-97b6-43158f1be880",
+      "name": "Init Loop State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2336,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.poll_interval_sec }}"
+      },
+      "id": "7b86b4b6-136c-436d-9b19-132eb98b72a5",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -2176,
+        64
+      ],
+      "webhookId": "0ca3ae07-30cb-4d50-b388-6aab75814b53",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.va.landing.ai/v1/ade/parse/jobs/{{$json.job_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eTJycThyMWo4M2FxeHE3a3h1NnR0OkFycE5SWnJJWWt4QWs1bkgwS3RvcDc2bUlyMkdHNDdz"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f19ca007-18b6-423c-86eb-e77dbf40c8b6",
+      "name": "Poll Job Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1984,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * INCREMENT + EXTRACT (PRODUCTION, SAFE)\n * Uses Wait node as the single source of truth for loop state\n * Added loop duration safety check\n */\n\n// 1. Recover loop state from Wait\nconst prev = $items(\"Wait\")[0].json;\n\n// 2. Poll response is current node input\nconst poll = $json;\n\n// 3. Retry logic\nconst nextRetry = (prev.retry_count ?? 0) + 1;\nconst baseWait = prev.poll_interval_sec ?? 30;\n\n// 4. Optional exponential backoff\nconst nextWait =\n  nextRetry <= 4\n    ? baseWait\n    : Math.min(baseWait * Math.pow(1.5, nextRetry - 4), 120);\n\n// 5. Safety check: calculate elapsed time\nconst loopStartTime = prev.loop_start_time ?? Date.now();\nconst elapsedSec = Math.floor((Date.now() - loopStartTime) / 1000);\nconst maxDuration = prev.max_loop_duration_sec ?? 3600;\nconst isStuckLoop = elapsedSec > maxDuration;\n\n// 6. Debug logging - ENHANCED\nconsole.log('====================================');\nconsole.log(`[Loop Iteration ${nextRetry}]`);\nconsole.log('Status:', poll.status);\nconsole.log('Elapsed:', elapsedSec + 's');\nconsole.log('IsStuck:', isStuckLoop);\nconsole.log('Full API Response:', JSON.stringify(poll, null, 2));\nconsole.log('Has data field?', !!poll.data);\nconsole.log('Has markdown?', !!poll.data?.markdown);\nconsole.log('Markdown length:', poll.data?.markdown?.length || 0);\nconsole.log('====================================');\n\n// 7. Return merged state\nreturn {\n  json: {\n    // ---- STATE ----\n    file_id: prev.file_id,\n    document_name: prev.document_name,\n    mime_type: prev.mime_type,\n    file_size_bytes: prev.file_size_bytes,\n    job_id: prev.job_id,\n    max_retries: prev.max_retries,\n    loop_start_time: loopStartTime,\n    max_loop_duration_sec: maxDuration,\n\n    // ---- LOOP CONTROL ----\n    retry_count: nextRetry,\n    poll_interval_sec: Math.round(nextWait),\n    elapsed_seconds: elapsedSec,\n    is_stuck_loop: isStuckLoop,\n\n    // ---- POLL DATA ----\n    job_status: poll.status ?? null,\n    markdown: poll.data?.markdown ?? null,\n    markdown_splits: poll.data?.splits ?? null,\n    output_url: poll.output_url ?? null,\n    page_count: poll.metadata?.page_count ?? null,\n    failure_reason: poll.failure_reason ?? null,\n\n    // ---- DEBUG ----\n    api_raw: poll\n  }\n};"
+      },
+      "id": "3a439bdd-4cd5-4a40-9e05-173bebd76b05",
+      "name": "Increment + Extract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1728,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "completed_status",
+              "leftValue": "={{ $json.job_status }}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "853aea20-cca1-4b4c-8564-c5e56c720793",
+      "name": "If Completed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1488,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "timeout_by_retries",
+              "leftValue": "={{ $json.retry_count }}",
+              "rightValue": "={{ $json.max_retries }}",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "timeout_by_duration",
+              "leftValue": "={{ $json.is_stuck_loop }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "7af7744b-13d2-4466-9e04-333286e44a50",
+      "name": "If Timeout",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1248,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "landing_parse_cache",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "file_id",
+              "fieldValue": "={{ $('If Completed').item.json.file_id }}"
+            },
+            {
+              "fieldId": "document_name",
+              "fieldValue": "={{$('If Completed').item.json.document_name}}"
+            },
+            {
+              "fieldId": "mime_type",
+              "fieldValue": "={{$('If Completed').item.json.mime_type}}"
+            },
+            {
+              "fieldId": "file_size_bytes",
+              "fieldValue": "={{$('If Completed').item.json.file_size_bytes}}"
+            },
+            {
+              "fieldId": "job_id",
+              "fieldValue": "={{$('If Completed').item.json.job_id}}"
+            },
+            {
+              "fieldId": "job_status",
+              "fieldValue": "completed"
+            },
+            {
+              "fieldId": "page_count",
+              "fieldValue": "={{$('If Completed').item.json.page_count}}"
+            },
+            {
+              "fieldId": "markdown",
+              "fieldValue": "={{$json.markdown}}"
+            },
+            {
+              "fieldId": "failure_reason"
+            },
+            {
+              "fieldId": "source_system",
+              "fieldValue": "landing.ai"
+            },
+            {
+              "fieldId": "uploaded_at",
+              "fieldValue": "={{$now}}"
+            },
+            {
+              "fieldId": "workflow_run_id",
+              "fieldValue": "={{$execution.id}}"
+            },
+            {
+              "fieldId": "markdown_splits",
+              "fieldValue": "={{$json.markdown_splits}}"
+            },
+            {
+              "fieldId": "markdown_llm_clean",
+              "fieldValue": "={{$json.markdown_llm_clean}}"
+            }
+          ]
+        }
+      },
+      "id": "8d37b62b-b8ba-4991-9f6c-5891bbfdf9d3",
+      "name": "Save Parse Result",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -528,
+        -256
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "atK6uS67YhpIOf7W",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "landing_parse_cache",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "file_id",
+              "fieldValue": "={{$json.file_id}}"
+            },
+            {
+              "fieldId": "document_name",
+              "fieldValue": "={{$json.document_name}}"
+            },
+            {
+              "fieldId": "mime_type",
+              "fieldValue": "={{$json.mime_type}}"
+            },
+            {
+              "fieldId": "file_size_bytes",
+              "fieldValue": "={{$json.file_size_bytes}}"
+            },
+            {
+              "fieldId": "job_id",
+              "fieldValue": "={{$json.job_id}}"
+            },
+            {
+              "fieldId": "job_status",
+              "fieldValue": "timeout"
+            },
+            {
+              "fieldId": "page_count",
+              "fieldValue": "={{$json.page_count}}"
+            },
+            {
+              "fieldId": "markdown",
+              "fieldValue": "={{$json.markdown}}"
+            },
+            {
+              "fieldId": "failure_reason",
+              "fieldValue": "={{$json.is_stuck_loop ? 'Loop exceeded max duration (' + $json.elapsed_seconds + 's)' : ($json.api_raw?.failure_reason ?? 'Max retries exceeded')}}"
+            },
+            {
+              "fieldId": "source_system",
+              "fieldValue": "landing.ai"
+            },
+            {
+              "fieldId": "uploaded_at",
+              "fieldValue": "={{$now}}"
+            },
+            {
+              "fieldId": "workflow_run_id",
+              "fieldValue": "={{$execution.id}}"
+            }
+          ]
+        }
+      },
+      "id": "c4e925c5-4ee4-4216-9dcd-3ac54fff2fb0",
+      "name": "Log Timeout",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -848,
+        64
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "atK6uS67YhpIOf7W",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log('✅ WORKFLOW COMPLETE - Parse successful');\nconsole.log('File:', $json.document_name);\nconsole.log('Pages:', $json.page_count);\nconsole.log('Job ID:', $json.job_id);\n\nreturn $input.all();"
+      },
+      "id": "7a714a11-a534-4ea6-96be-0a31aaac3126",
+      "name": "STOP — Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        -256
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log('❌ WORKFLOW FAILED - Parse timeout');\nconsole.log('File:', $json.document_name);\nconsole.log('Retries:', $json.retry_count);\nconsole.log('Elapsed:', $json.elapsed_seconds + 's');\n\nreturn $input.all();"
+      },
+      "id": "4caf5ef5-142c-4362-939d-736f1b2ee308",
+      "name": "STOP — Timeout",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.output_url }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -992,
+        -544
+      ],
+      "id": "cc09479e-7855-4709-9e41-28dd5d7ebb65",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "95b25c8b-fea9-4f3c-8a79-0102f47a1975",
+              "leftValue": "={{ $json.output_url }}",
+              "rightValue": "null",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1248,
+        -272
+      ],
+      "id": "1c20c936-2569-4ec9-bbad-d0c0ac3bf9c6",
+      "name": "check-large-file"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * INTEGRATED MARKDOWN PROCESSOR v3.1 (Production)\n * Combines: New Optimizer (27,971 chars) + LLM-GRADE Post-Processor (Fixed v3.1)\n * \n * OUTPUT SCHEMA (Supabase Compatible):\n * - markdown                 : Raw Landing.ai markdown (preserved)\n * - markdown_llm_clean       : Optimized markdown for LLM extraction\n * - markdown_splits          : Array of section splits\n * - markdown_canonical       : Canonical structured markdown (LLM-GRADE)\n * - sections                 : Canonical sections with taxonomy\n * - tables                   : Extracted tables\n * - document_name            : Document name\n * - file_id                  : File ID (preserved from input)\n * - [other metadata fields preserved from input]\n */\n\n// ============================================================================\n// PART 1: NEW OPTIMIZER (Phases 1-5)\n// ============================================================================\n\nfunction txt(value) {\n  return value == null ? '' : String(value);\n}\n\nfunction RX(pattern, flags) {\n  return new RegExp(pattern, flags || 'g');\n}\n\nfunction normalizeEncoding(text) {\n  let t = txt(text);\n  t = t.replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');\n  t = t.replace(/^\\uFEFF/, '');\n  t = t.replace(/\\u00A0/g, ' ');\n  t = t.replace(/\\u2007/g, ' ');\n  t = t.replace(/\\u202F/g, ' ');\n  t = t.replace(/[\\u2000-\\u200B]/g, ' ');\n  t = t.replace(/[\\u2018\\u2019]/g, \"'\");\n  t = t.replace(/[\\u201C\\u201D]/g, '\"');\n  t = t.replace(/[\\u2013\\u2014]/g, '-');\n  t = t.replace(/\\u2026/g, '...');\n  return t;\n}\n\nfunction removeLandingAiArtifacts(text) {\n  let t = text;\n  t = t.replace(/<a\\s+id=['\"][^'\"]*['\"]\\s*>\\s*<\\/a>/gi, '');\n  t = t.replace(/<a\\s+id=['\"][^'\"]*['\"]\\s*\\/>/gi, '');\n  t = t.replace(/  +/g, '\\n');\n  \n  t = t.replace(/<::\\s*(.+?)\\s*::>/gs, function(match, content) {\n    const cleaned = content.trim();\n    if (cleaned.length > 800 || cleaned.length < 10) return '';\n    \n    const typeMatch = cleaned.match(/^(.+?):\\s*(figure|photo|chart|map|table|image|logo|transcription|icon)\\s*$/i);\n    if (typeMatch) {\n      return '\\n\\n[FIGURE: ' + typeMatch[1].trim() + ']\\n\\n';\n    }\n    return '\\n\\n[FIGURE: ' + cleaned + ']\\n\\n';\n  });\n  \n  return t;\n}\n\nfunction removeDocumentArtifacts(text) {\n  let t = text;\n  t = t.replace(/^[\\s\\n]*page\\s+\\d+\\s+of\\s+\\d+[\\s\\n]*/gim, '\\n');\n  t = t.replace(/^[\\s\\n]*page\\s+\\d+[\\s\\n]*/gim, '\\n');\n  t = t.replace(/^\\d+\\s*$/gm, '');\n  t = t.replace(/^.*?annual\\s+report\\s+\\d{4}.*?$/gmi, '');\n  t = t.replace(/^.*?board\\s+of\\s+directors'?\\s+report.*?$/gmi, '');\n  return t;\n}\n\nfunction removeOCRArtifacts(text) {\n  let t = text;\n  t = t.replace(/\\s+\\|\\s+/g, ' | ');\n  t = t.replace(/[|┃┆┇┊┋]\\s*$/gm, '');\n  t = t.replace(/^\\s*[|┃┆┇┊┋]/gm, '');\n  t = t.replace(/_{3,}/g, '');\n  t = t.replace(/={3,}/g, '');\n  return t;\n}\n\nfunction fixFormattingIssues(text) {\n  let t = text;\n  t = t.replace(/(\\w)-\\s+(\\w)/g, '$1$2');\n  t = t.replace(/([a-z])\\s+([a-z])\\s+([a-z])/g, function(match, a, b, c) {\n    if (/^[aeiou]$/i.test(b)) return match;\n    return a + b + c;\n  });\n  return t;\n}\n\nfunction normalizeWhitespace(text) {\n  let t = text;\n  t = t.replace(/[ \\t]+/g, ' ');\n  t = t.replace(/\\n{4,}/g, '\\n\\n\\n');\n  t = t.replace(/^\\s+$/gm, '');\n  return t.trim();\n}\n\nfunction normalizeHeadings(text) {\n  let lines = text.split('\\n');\n  let result = [];\n  \n  for (let i = 0; i < lines.length; i++) {\n    let line = lines[i];\n    let trimmed = line.trim();\n    \n    if (!trimmed) {\n      result.push(line);\n      continue;\n    }\n    \n    if (/^#{1,6}\\s/.test(trimmed)) {\n      result.push(line);\n      continue;\n    }\n    \n    let isAllCaps = /^[A-Z0-9\\s\\-:',&()]+$/.test(trimmed) && trimmed.length > 5 && trimmed.length < 100;\n    let hasNumberPrefix = /^\\d+\\.?\\s+[A-Z]/.test(trimmed);\n    let isTitleCase = /^[A-Z][a-z]+(\\s+[A-Z][a-z]+)*$/.test(trimmed) && trimmed.split(/\\s+/).length >= 2 && trimmed.split(/\\s+/).length <= 12;\n    \n    if (isAllCaps || hasNumberPrefix || isTitleCase) {\n      let level = 2;\n      if (hasNumberPrefix && /^\\d+\\s/.test(trimmed)) level = 1;\n      else if (isAllCaps && trimmed.length < 30) level = 1;\n      else if (isTitleCase && trimmed.split(/\\s+/).length <= 4) level = 2;\n      else level = 3;\n      \n      let cleanHeading = trimmed.replace(/^\\d+\\.?\\s+/, '').trim();\n      result.push('#'.repeat(level) + ' ' + cleanHeading);\n    } else {\n      result.push(line);\n    }\n  }\n  \n  return result.join('\\n');\n}\n\nfunction normalizeHeadingLevels(text) {\n  let lines = text.split('\\n');\n  let headingStack = [];\n  let result = [];\n  \n  for (let line of lines) {\n    let match = line.match(/^(#{1,6})\\s+(.+)/);\n    if (!match) {\n      result.push(line);\n      continue;\n    }\n    \n    let currentLevel = match[1].length;\n    let title = match[2].trim();\n    \n    while (headingStack.length > 0 && headingStack[headingStack.length - 1] >= currentLevel) {\n      headingStack.pop();\n    }\n    \n    let normalizedLevel = headingStack.length + 1;\n    normalizedLevel = Math.min(normalizedLevel, 6);\n    \n    headingStack.push(currentLevel);\n    result.push('#'.repeat(normalizedLevel) + ' ' + title);\n  }\n  \n  return result.join('\\n');\n}\n\nfunction extractAndNormalizeTables(text) {\n  let tableId = 0;\n  let tables = [];\n  \n  let processed = text.replace(/<table[\\s\\S]*?<\\/table>/gi, function(tableHtml) {\n    tableId++;\n    \n    let rows = [];\n    let rowMatches = tableHtml.match(/<tr[\\s\\S]*?<\\/tr>/gi) || [];\n    \n    rowMatches.forEach(function(rowHtml) {\n      let cells = [];\n      let cellMatches = rowHtml.match(/<t[dh][^>]*>[\\s\\S]*?<\\/t[dh]>/gi) || [];\n      \n      cellMatches.forEach(function(cellHtml) {\n        let cellText = cellHtml.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\n        cells.push(cellText);\n      });\n      \n      if (cells.length > 0) {\n        rows.push(cells);\n      }\n    });\n    \n    if (rows.length === 0) return '';\n    \n    let maxCols = Math.max.apply(null, rows.map(function(r) { return r.length; }));\n    \n    let hasHeaders = /<th/i.test(tableHtml);\n    let headers = hasHeaders && rows.length > 0 ? rows[0] : [];\n    let dataRows = hasHeaders ? rows.slice(1) : rows;\n    \n    tables.push({\n      id: tableId,\n      headers: headers,\n      rows: dataRows\n    });\n    \n    return '\\n\\n[[TABLE_' + tableId + ']]\\n\\n';\n  });\n  \n  return {\n    text: processed,\n    tables: tables\n  };\n}\n\nfunction detectSections(text) {\n  let lines = text.split('\\n');\n  let sections = [];\n  let currentSection = null;\n  \n  for (let line of lines) {\n    let match = line.match(/^(#{1,6})\\s+(.+)/);\n    \n    if (match) {\n      if (currentSection) {\n        currentSection.content = currentSection.content.join('\\n').trim();\n        if (currentSection.content) {\n          sections.push(currentSection);\n        }\n      }\n      \n      currentSection = {\n        level: match[1].length,\n        title: match[2].trim(),\n        content: []\n      };\n    } else if (currentSection) {\n      currentSection.content.push(line);\n    }\n  }\n  \n  if (currentSection) {\n    currentSection.content = currentSection.content.join('\\n').trim();\n    if (currentSection.content) {\n      sections.push(currentSection);\n    }\n  }\n  \n  return sections;\n}\n\nfunction buildLLMOutput(sections, tables, metadata) {\n  let output = '=== DOCUMENT METADATA ===\\n';\n  output += 'PROCESSING_METHOD: ' + metadata.method + '\\n';\n  output += 'QUALITY: ' + metadata.quality + '\\n';\n  output += 'SECTIONS: ' + metadata.section_count + '\\n';\n  output += 'TABLES: ' + metadata.table_count + '\\n';\n  output += '=== END METADATA ===\\n\\n';\n  \n  sections.forEach(function(section, index) {\n    output += '#'.repeat(section.level) + ' ' + section.title + '\\n\\n';\n    \n    let content = section.content;\n    let tableMatches = content.match(/\\[\\[TABLE_\\d+\\]\\]/g) || [];\n    \n    tableMatches.forEach(function(match) {\n      let tableId = parseInt(match.match(/\\d+/)[0]);\n      let table = tables.find(function(t) { return t.id === tableId; });\n      \n      if (table) {\n        let tableText = '\\nTABLE ' + tableId + ':\\n';\n        if (table.headers.length > 0) {\n          tableText += 'HEADERS: ' + table.headers.join(' | ') + '\\n';\n        }\n        tableText += 'DATA:\\n';\n        table.rows.forEach(function(row, i) {\n          tableText += '  ' + (i + 1) + '. ' + row.join(' | ') + '\\n';\n        });\n        content = content.replace(match, tableText);\n      }\n    });\n    \n    output += content + '\\n\\n';\n  });\n  \n  return output.trim();\n}\n\nfunction createStructuredSplits(sections, tables) {\n  return sections.map(function(section, index) {\n    let sectionTables = [];\n    let tableMatches = section.content.match(/\\[\\[TABLE_\\d+\\]\\]/g) || [];\n    \n    tableMatches.forEach(function(match) {\n      let tableId = parseInt(match.match(/\\d+/)[0]);\n      let table = tables.find(function(t) { return t.id === tableId; });\n      if (table) {\n        sectionTables.push({\n          id: table.id,\n          headers: table.headers,\n          rows: table.rows\n        });\n      }\n    });\n    \n    let cleanContent = section.content.replace(/\\[\\[TABLE_\\d+\\]\\]/g, '').trim();\n    \n    return {\n      section_index: index + 1,\n      section_title: section.title,\n      section_level: section.level,\n      word_count: cleanContent.split(/\\s+/).length,\n      has_tables: sectionTables.length > 0,\n      table_count: sectionTables.length,\n      tables: sectionTables,\n      content: cleanContent\n    };\n  });\n}\n\n// ============================================================================\n// PART 2: LLM-GRADE POST-PROCESSOR (v3.1 Fixed)\n// ============================================================================\n\nfunction stableHash32(str) {\n  let h = 2166136261 >>> 0;\n  for (let i = 0; i < str.length; i++) {\n    h ^= str.charCodeAt(i);\n    h = Math.imul(h, 16777619) >>> 0;\n  }\n  return (\"00000000\" + h.toString(16)).slice(-8);\n}\n\nfunction lowerFold(s) {\n  return txt(s)\n    .toLowerCase()\n    .replace(/[\"\"'']/g, \"'\")\n    .replace(/[‐-–—]/g, \"-\")\n    .replace(/[^\\p{L}\\p{N}\\s&'\\/\\-\\.\\(\\):]/gu, \" \")\n    .replace(/\\s+/g, \" \")\n    .trim();\n}\n\nconst TAXONOMY = [\n  {\n    id: \"BANK_PROFILE\",\n    title: \"Bank profile\",\n    level: 1,\n    patterns: [\"bank profile\", \"about\", \"at a glance\", \"highlights\"],\n    negative: [\"financial statements\", \"governance\", \"board\"]\n  },\n  {\n    id: \"STRATEGIC_REVIEW\",\n    title: \"Strategic review\",\n    level: 1,\n    patterns: [\"strategic review\", \"chairman\", \"ceo\", \"message\"],\n    negative: [\"financial statements\", \"board of directors\"]\n  },\n  {\n    id: \"GOVERNANCE\",\n    title: \"Governance\",\n    level: 1,\n    patterns: [\"governance\", \"board\", \"directors\", \"committee\"],\n    negative: [\"financial statements\"]\n  },\n  {\n    id: \"BOARD_OF_DIRECTORS\",\n    title: \"Board of Directors\",\n    level: 2,\n    parent: \"GOVERNANCE\",\n    patterns: [\"board of directors\", \"directors\", \"board members\"],\n    negative: [\"committee\", \"financial statements\"]\n  },\n  {\n    id: \"FINANCIAL_STATEMENTS\",\n    title: \"Financial statements\",\n    level: 1,\n    patterns: [\"financial statements\", \"auditors report\", \"consolidated statement\"],\n    negative: [\"board\", \"committee\"]\n  },\n  {\n    id: \"OTHER_INFORMATION\",\n    title: \"Other information\",\n    level: 1,\n    patterns: [\"other information\"],\n    negative: []\n  }\n];\n\nconst TAX_BY_ID = {};\nTAXONOMY.forEach(function(n) { TAX_BY_ID[n.id] = n; });\n\nfunction scoreTaxonMatch(headingText, node) {\n  let h = lowerFold(headingText);\n  \n  if (node.negative && node.negative.length) {\n    for (let i = 0; i < node.negative.length; i++) {\n      let n = lowerFold(node.negative[i]);\n      if (n && h.indexOf(n) !== -1) return -5;\n    }\n  }\n  \n  let score = 0;\n  if (lowerFold(node.title) === h) score += 6;\n  \n  let patterns = node.patterns || [];\n  for (let i = 0; i < patterns.length; i++) {\n    let pp = lowerFold(patterns[i]);\n    if (!pp) continue;\n    if (h === pp) score += 5;\n    else if (h.indexOf(pp) !== -1) score += 3;\n  }\n  \n  return score;\n}\n\nfunction classifyHeading(headingText) {\n  let best = { id: \"OTHER_INFORMATION\", score: 0 };\n  \n  for (let i = 0; i < TAXONOMY.length; i++) {\n    let node = TAXONOMY[i];\n    let s = scoreTaxonMatch(headingText, node);\n    if (s > best.score) best = { id: node.id, score: s };\n  }\n  \n  if (best.score < 3) return { id: \"OTHER_INFORMATION\", score: best.score };\n  return best;\n}\n\nfunction assignToCanonical(sections) {\n  return sections.map(function(section) {\n    let cls = classifyHeading(section.title);\n    return {\n      heading: section.title,\n      canonicalId: cls.id,\n      level: section.level,\n      content: section.content\n    };\n  });\n}\n\nfunction mergeToCanonicalSections(assigned) {\n  let buckets = {};\n  TAXONOMY.forEach(function(node) { buckets[node.id] = []; });\n  \n  assigned.forEach(function(item) {\n    let wc = item.content ? item.content.split(/\\s+/).filter(Boolean).length : 0;\n    if (wc < 10) return;\n    buckets[item.canonicalId].push(item);\n  });\n  \n  let sections = [];\n  \n  TAXONOMY.forEach(function(node) {\n    let items = buckets[node.id] || [];\n    if (items.length === 0) return;\n    \n    let parts = [];\n    items.forEach(function(it) {\n      let oh = (it.heading || \"\").trim();\n      let isBioNoise = /^(previous position|qualification|current position)/i.test(oh);\n      \n      if (oh && oh.length <= 100 && !isBioNoise && lowerFold(oh) !== lowerFold(node.title)) {\n        parts.push('#'.repeat(Math.min(node.level + 1, 6)) + ' ' + oh);\n      }\n      if (it.content) parts.push(it.content.trim());\n    });\n    \n    let body = parts.join('\\n\\n').replace(/\\n{3,}/g, '\\n\\n').trim();\n    if (!body) return;\n    \n    sections.push({\n      id: node.id,\n      section_id: node.id + '_' + stableHash32(body.slice(0, 2000)),\n      level: node.level,\n      title: node.title,\n      content: body\n    });\n  });\n  \n  return sections;\n}\n\nfunction buildCanonicalMarkdown(sections) {\n  let out = '';\n  \n  sections.forEach(function(sec) {\n    let hashes = '#'.repeat(Math.max(1, Math.min(6, sec.level || 1)));\n    out += hashes + ' ' + sec.title + '\\n\\n';\n    out += sec.content.trim() + '\\n\\n';\n  });\n  \n  return out.trim();\n}\n\n// ============================================================================\n// MAIN INTEGRATION\n// ============================================================================\n\nconst input = $input.first().json;\nconst rawMarkdown = input.markdown || input.manual_markdown || input.raw_markdown;\n\nif (!rawMarkdown) {\n  throw new Error('No markdown input provided');\n}\n\n// Run new optimizer\nlet text = normalizeEncoding(rawMarkdown);\ntext = removeLandingAiArtifacts(text);\ntext = removeDocumentArtifacts(text);\ntext = removeOCRArtifacts(text);\ntext = fixFormattingIssues(text);\ntext = normalizeWhitespace(text);\ntext = normalizeHeadings(text);\ntext = normalizeHeadingLevels(text);\n\nconst tableResult = extractAndNormalizeTables(text);\ntext = tableResult.text;\nconst tables = tableResult.tables;\n\nconst sections = detectSections(text);\n\nconst metadata = {\n  method: sections.length >= 3 ? 'hierarchical_sections' : 'intelligent_chunking',\n  quality: sections.length >= 5 ? 'HIGH' : sections.length >= 3 ? 'MEDIUM' : 'LOW',\n  section_count: sections.length,\n  table_count: tables.length\n};\n\nconst llmOptimized = buildLLMOutput(sections, tables, metadata);\nconst structuredSplits = createStructuredSplits(sections, tables);\n\n// Run LLM-GRADE post-processor for canonical sections\nconst assigned = assignToCanonical(sections);\nconst canonicalSections = mergeToCanonicalSections(assigned);\nconst canonicalMarkdown = buildCanonicalMarkdown(canonicalSections);\n\n// Build Supabase-compatible output\nreturn [{\n  json: {\n    // Required Supabase fields\n    file_id: input.file_id,\n    document_name: input.document_name,\n    mime_type: input.mime_type,\n    file_size_bytes: input.file_size_bytes,\n    job_id: input.job_id,\n    page_count: input.page_count,\n    \n    // Core markdown fields (Supabase schema)\n    markdown: rawMarkdown,                    // Raw Landing.ai markdown\n    markdown_llm_clean: llmOptimized,        // Optimized for LLM (replaces markdown_llm_optimized)\n    markdown_splits: structuredSplits,       // Section splits array\n    \n    // Enhanced fields (canonical structure)\n    markdown_canonical: canonicalMarkdown,   // Canonical taxonomy-based markdown\n    sections: canonicalSections,             // Canonical sections with IDs\n    tables: tables,                          // Extracted tables\n    \n    // Preserve all other input fields\n    drive_modified_time: input.drive_modified_time,\n    drive_created_time: input.drive_created_time\n  }\n}];\n"
+      },
+      "id": "00fcf574-62a2-4db0-91f2-805dce82a397",
+      "name": "Prepare Markdown (Optimise + Splits + Figures)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -736,
+        -256
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Google Drive Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Build Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Metadata": {
+      "main": [
+        [
+          {
+            "node": "Check Cache",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Metadata + Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Cache": {
+      "main": [
+        [
+          {
+            "node": "Debug Cache Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Debug Cache Results": {
+      "main": [
+        [
+          {
+            "node": "If Cache Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Cache Exists": {
+      "main": [
+        [
+          {
+            "node": "STOP — Cached",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Submit to Landing.ai",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit to Landing.ai": {
+      "main": [
+        [
+          {
+            "node": "Merge Metadata + Job",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Metadata + Job": {
+      "main": [
+        [
+          {
+            "node": "Init Loop State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Loop State": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Poll Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Job Status": {
+      "main": [
+        [
+          {
+            "node": "Increment + Extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment + Extract": {
+      "main": [
+        [
+          {
+            "node": "If Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Completed": {
+      "main": [
+        [
+          {
+            "node": "check-large-file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Timeout": {
+      "main": [
+        [
+          {
+            "node": "Log Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Parse Result": {
+      "main": [
+        [
+          {
+            "node": "STOP — Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Timeout": {
+      "main": [
+        [
+          {
+            "node": "STOP — Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Prepare Markdown (Optimise + Splits + Figures)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check-large-file": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Markdown (Optimise + Splits + Figures)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Markdown (Optimise + Splits + Figures)": {
+      "main": [
+        [
+          {
+            "node": "Save Parse Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "c9e6503f-b4f9-4bfb-8abf-45f37d268a72",
+  "meta": {
+    "instanceId": "547710202f52527a7da0ca4f12ebc0d28d5c9dcb31834d8c9e5459fb5219263c"
+  },
+  "id": "7Isynhtjin620J9m",
+  "tags": []
+}
